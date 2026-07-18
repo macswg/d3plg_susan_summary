@@ -22,8 +22,17 @@ hierarchy, so guard director calls with `except BaseException`, never bare
 """
 from __future__ import print_function
 import json
-import os
 import time
+
+# NB: `os` is deliberately NOT imported here. When this file is registered as a
+# director module, d3 injects its own globals over the module namespace,
+# including one named `os` of type `OS` which has no `path`/`makedirs` -- so a
+# module-level `import os` silently becomes the wrong object and every write
+# fails with "'OS' object has no attribute 'path'". A function-local import
+# binds the real module. Use _os() instead of importing at module level.
+#
+# The director embeds Python 2 (no pathlib, `long`, `os.getcwdu`), so this file
+# must stay 2/3 compatible.
 
 __all__ = ["capture"]
 
@@ -41,6 +50,13 @@ def _g(name):
     except BaseException:
         return None
     return getattr(d3, name, None)
+
+
+def _os():
+    """The real `os` module. Must be imported inside a function -- see the note
+    at the top of this file."""
+    import os
+    return os
 
 
 def _attr(obj, name, default=None):
@@ -167,9 +183,11 @@ def _media_records(layer, debug):
     # their media (../d3plg_media_info only ever evals under the playhead, where
     # it works, so it never hit this).
     for key in _attr(sequence, "keys", []) or []:
-        # KeyResource's payload attribute isn't documented; take whichever of
-        # these exists, or the key itself if it already looks like a resource.
-        for attr in ("resource", "value", "v", "r", "res"):
+        # KeyResource holds its media on `r` (confirmed on a real director; its
+        # only other members are interpolation/localT/select/tEpsilon). `r` is
+        # None when the layer has a video module but no clip assigned -- a
+        # normal, empty layer, not a lookup failure.
+        for attr in ("r", "resource", "value", "v", "res"):
             candidate = _attr(key, attr)
             if candidate is not None:
                 _add(candidate)
@@ -184,10 +202,6 @@ def _media_records(layer, debug):
         _add(sequence.evalResource(_attr(layer, "tStart", 0.0)))
     except BaseException as e:
         debug.append("evalResource failed: {0}".format(e))
-
-    if not resources:
-        debug.append("no media resolved for layer {0!r} despite a video sequence"
-                     .format(_name_of(layer)))
 
     return [_media_record(r) for r in resources]
 
@@ -220,7 +234,9 @@ def _beat(track, t, debug):
     variant are MISSING), so it has to be derived through the track."""
     if t is None or track is None:
         return None
-    for method in ("globalTimeToBeat", "timeToBeat"):
+    # timeToBeat(t) is the one that takes a single argument; globalTimeToBeat
+    # needs more and raises "Incorrect number of arguments to call".
+    for method in ("timeToBeat", "globalTimeToBeat"):
         try:
             fn = getattr(track, method, None)
             if callable(fn):
@@ -322,7 +338,7 @@ def _project_name(debug):
                 return str(val)
         folder = _call(paths, "projectFolder")
         if folder:
-            return os.path.basename(str(folder).rstrip("/\\"))
+            return _os().path.basename(str(folder).rstrip("/\\"))
     debug.append("project name unresolved")
     return None
 
@@ -334,11 +350,11 @@ def _log_dir(debug):
     paths = _project_paths(debug)
     folder = _call(paths, "projectFolder") if paths is not None else None
     if folder:
-        base = os.path.join(str(folder), "plugins", MODULE_DIR_NAME)
+        base = _os().path.join(str(folder), "plugins", MODULE_DIR_NAME)
     else:
         debug.append("project folder unresolved; logging beside snapshot.py")
-        base = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base, "logs")
+        base = _os().path.dirname(_os().path.abspath(__file__))
+    return _os().path.join(base, "logs")
 
 
 def _write(snapshot, debug):
@@ -349,12 +365,12 @@ def _write(snapshot, debug):
     itself; setting it afterwards would leave every saved log claiming null."""
     try:
         directory = _log_dir(debug)
-        if not os.path.isdir(directory):
-            os.makedirs(directory)
+        if not _os().path.isdir(directory):
+            _os().makedirs(directory)
         stamp = time.strftime("%Y-%m-%dT%H-%M-%S", time.gmtime())
         project = snapshot.get("project") or "project"
         safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in project)
-        path = os.path.join(directory, "{0}_{1}.json".format(stamp, safe))
+        path = _os().path.join(directory, "{0}_{1}.json".format(stamp, safe))
         snapshot["writtenTo"] = path
         handle = open(path, "w")
         try:

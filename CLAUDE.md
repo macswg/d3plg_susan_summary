@@ -43,16 +43,41 @@ resolves either way — use it instead of referencing those names directly.
   serialises it. `writtenTo` was set afterwards at first, so every saved log
   claimed `"writtenTo": null` while sitting at that exact path.
 
+## The sandbox is Python 2, and `os` is booby-trapped
+
+The director embeds **Python 2** (no `pathlib`, `long`, `os.getcwdu`), so this
+file must stay 2/3 compatible.
+
+When registered as a module, d3 injects its globals over the module namespace —
+including one named `os` of type `OS` with no `path`/`makedirs`. A module-level
+`import os` therefore silently becomes the wrong object and every write dies with
+`'OS' object has no attribute 'path'`. A *function-local* import gets the real
+module; that's what `_os()` is for. **Never add a module-level `import os`.**
+
+This only bites in the registered-module path — the console path has real `os`,
+so the bug is invisible when testing via `import snapshot`.
+
 ## Confirmed against a real director (2026-07-18)
 
-Working: setlist resolution (`automatic` set list), track names/bpm/lengths,
-layer names, `tStart`/`tEnd`, `renderEnable`, media name/path/version,
-`.apx` stripping, the log file write.
+Working end-to-end through the sandbox: project name, setlist, tracks, layers,
+module types, `tStart`/`tEnd`, derived beats, media name/path/version/regionSet,
+`.apx` stripping, and the log file write (self-naming verified).
 
-Unconfirmed: `bStart`/`bEnd` came back null — the beat-field names are still
-wrong. `regionSet` was null throughout, which may be correct or may be the wrong
-attribute. Run `tools/probe.py` on the director to settle both; it dumps every
-public member of a real track, layer, module, sequence and media resource.
+- `KeyResource.r` holds the media. Its only other members are
+  `interpolation`/`localT`/`select`/`tEpsilon`/`cubic`/`linear`/`null`. `r` is
+  `None` when a layer has a video module but no clip assigned — an empty layer,
+  **not** a lookup failure. Don't "fix" that into a warning again.
+- `track.timeToBeat(t)` takes one argument; `globalTimeToBeat` /
+  `beatToGlobalTime` need more and raise "Incorrect number of arguments".
+- `state.projectName` works; there is no project *folder* attribute, so the log
+  dir falls back to `__file__`'s directory. That resolves differently per
+  context: project root when registered as a module, the plugins folder from the
+  console. `writtenTo` always records where it actually went.
+- Layer `name` is set but transport/setlist `name` is not — `_name_of` falls
+  back to `description`, which is why those resolve.
+
+Re-run `tools/probe.py` when a field comes back empty; it dumps every public
+member of a real track, layer, module, sequence, key and media resource.
 
 ## Design decisions worth keeping
 
