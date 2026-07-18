@@ -161,26 +161,33 @@ def _media_records(layer, debug):
         seen.add(key)
         resources.append(resource)
 
-    # The clip live at the layer's start.
+    # Read the sequence's keys directly. This is the primary source: probe.py
+    # found layers whose sequence holds a KeyResource but whose
+    # evalResource(tStart) returns None, so relying on eval alone silently drops
+    # their media (../d3plg_media_info only ever evals under the playhead, where
+    # it works, so it never hit this).
+    for key in _attr(sequence, "keys", []) or []:
+        # KeyResource's payload attribute isn't documented; take whichever of
+        # these exists, or the key itself if it already looks like a resource.
+        for attr in ("resource", "value", "v", "r", "res"):
+            candidate = _attr(key, attr)
+            if candidate is not None:
+                _add(candidate)
+                break
+        else:
+            if _attr(key, "path") is not None or _name_of(key):
+                _add(key)
+
+    # Evaluating at the layer's start can surface a clip the keys don't expose
+    # directly (e.g. one inherited from before the layer begins).
     try:
         _add(sequence.evalResource(_attr(layer, "tStart", 0.0)))
     except BaseException as e:
         debug.append("evalResource failed: {0}".format(e))
 
-    # Anything the sequence keys onto later in the layer.
-    for keys_attr in ("keys", "keyframes"):
-        keys = _attr(sequence, keys_attr)
-        if not keys:
-            continue
-        for key in keys:
-            t = _attr(key, "t", _attr(key, "time"))
-            if t is None:
-                continue
-            try:
-                _add(sequence.evalResource(t))
-            except BaseException:
-                continue
-        break
+    if not resources:
+        debug.append("no media resolved for layer {0!r} despite a video sequence"
+                     .format(_name_of(layer)))
 
     return [_media_record(r) for r in resources]
 
@@ -207,7 +214,23 @@ def _media_record(media):
     }
 
 
-def _layer_records(layer, group_path, debug):
+def _beat(track, t, debug):
+    """Beat position for a track time. Layers carry no beat fields at all
+    (confirmed by probe.py on a real director -- bStart/bEnd/startBeat and every
+    variant are MISSING), so it has to be derived through the track."""
+    if t is None or track is None:
+        return None
+    for method in ("globalTimeToBeat", "timeToBeat"):
+        try:
+            fn = getattr(track, method, None)
+            if callable(fn):
+                return _num(fn(t))
+        except BaseException as error:
+            debug.append("{0}({1}) failed: {2}".format(method, t, error))
+    return None
+
+
+def _layer_records(layer, group_path, track, debug):
     """Flatten a layer, recursing into groups. Mirrors getLayerStartTime() in
     ref/prewarmAllLayers2sec.py, except nothing is skipped: that script drops
     layers with renderEnable false, but a disabled layer is still showfile state,
@@ -223,7 +246,7 @@ def _layer_records(layer, group_path, debug):
     if is_group:
         records = []
         for sublayer in _attr(layer, "layers", []) or []:
-            records.extend(_layer_records(sublayer, group_path + [name], debug))
+            records.extend(_layer_records(sublayer, group_path + [name], track, debug))
         return records
 
     try:
@@ -237,8 +260,8 @@ def _layer_records(layer, group_path, debug):
             "renderEnable": bool(_attr(layer, "renderEnable", True)),
             "tStart": _num(_attr(layer, "tStart")),
             "tEnd": _num(_attr(layer, "tEnd")),
-            "bStart": _num(_attr(layer, "bStart")),
-            "bEnd": _num(_attr(layer, "bEnd")),
+            "bStart": _beat(track, _attr(layer, "tStart"), debug),
+            "bEnd": _beat(track, _attr(layer, "tEnd"), debug),
             "media": _media_records(layer, debug),
         }]
     except BaseException as error:
@@ -253,7 +276,7 @@ def _layer_records(layer, group_path, debug):
 def _track_record(track, debug):
     layers = []
     for layer in _attr(track, "layers", []) or []:
-        layers.extend(_layer_records(layer, [], debug))
+        layers.extend(_layer_records(layer, [], track, debug))
     return {
         "name": _name_of(track),
         "lengthInSec": _num(_attr(track, "lengthInSec")),
@@ -283,17 +306,23 @@ def _project_paths(debug):
 
 
 def _project_name(debug):
-    """ProjectPathsManager exposes these as *methods*, not properties."""
+    """Confirmed on a real director: `state.projectName` is a plain attribute on
+    D3State (probe.py, 2026-07-18). The ProjectPathsManager routes are kept as
+    fallbacks -- its projectName()/projectFolder() are *methods*, hence _call."""
+    state = _g("state")
+    name = _attr(state, "projectName")
+    if name:
+        return str(name)
+
     paths = _project_paths(debug)
-    if paths is None:
-        return None
-    for name in ("projectName", "projectFileName", "folderName"):
-        val = _call(paths, name)
-        if val:
-            return str(val)
-    folder = _call(paths, "projectFolder")
-    if folder:
-        return os.path.basename(str(folder).rstrip("/\\"))
+    if paths is not None:
+        for method in ("projectName", "projectFileName", "folderName"):
+            val = _call(paths, method)
+            if val:
+                return str(val)
+        folder = _call(paths, "projectFolder")
+        if folder:
+            return os.path.basename(str(folder).rstrip("/\\"))
     debug.append("project name unresolved")
     return None
 

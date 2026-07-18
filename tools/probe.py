@@ -31,7 +31,7 @@ def _g(name):
     return getattr(d3, name, None)
 
 
-def _dump(label, obj, limit=80):
+def _dump(label, obj, limit=200):
     print("\n=== %s : %s ===" % (label, type(obj).__name__))
     if obj is None:
         print("  <none>")
@@ -90,8 +90,12 @@ def run():
 
     setlist = getattr(tm, "setList", None)
     tracks = list(getattr(setlist, "tracks", []) or [])
-    print("transport=%r setlist=%r tracks=%d"
-          % (getattr(tm, "name", None), getattr(setlist, "name", None), len(tracks)))
+    # `name` came back None for both on the live run; snapshot.py falls back to
+    # `description`, so show both here.
+    print("transport=%r/%r setlist=%r/%r tracks=%d"
+          % (getattr(tm, "name", None), getattr(tm, "description", None),
+             getattr(setlist, "name", None), getattr(setlist, "description", None),
+             len(tracks)))
     if not tracks:
         return
 
@@ -134,11 +138,63 @@ def run():
             except BaseException as e:
                 print("      .%-14s <raised %s>" % (attr, str(e)[:40]))
 
-    # The media sequence, to confirm how to enumerate clip changes over time.
-    try:
-        seq = layer.findSequence("video").sequence
-        _dump("video sequence", seq)
-        media = seq.evalResource(getattr(layer, "tStart", 0.0))
-        _dump("media resource", media)
-    except BaseException as e:
-        print("\nno video sequence on probed layer: %s" % e)
+    # How do we actually get media off a sequence? evalResource(tStart) returns
+    # None on some layers that plainly have keys, so compare both routes across
+    # every layer -- this is the bug that silently emptied "media" arrays.
+    print("\n=== media resolution, all layers ===")
+    print("  %-22s %-10s %-6s %s" % ("layer", "keys", "eval", "module"))
+    a_key = None
+    a_media = None
+    for candidate in layers:
+        lname = getattr(candidate, "name", "?")
+        mod = type(getattr(candidate, "module", None)).__name__
+        try:
+            fs = candidate.findSequence("video")
+            seq = getattr(fs, "sequence", None) if fs else None
+        except BaseException:
+            seq = None
+        if seq is None:
+            print("  %-22s %-10s %-6s %s" % (lname[:22], "-", "-", mod))
+            continue
+        keys = list(getattr(seq, "keys", []) or [])
+        try:
+            ev = seq.evalResource(getattr(candidate, "tStart", 0.0))
+        except BaseException as e:
+            ev = "<raised %s>" % str(e)[:20]
+        print("  %-22s %-10s %-6s %s"
+              % (lname[:22], len(keys), "yes" if ev else "NONE", mod))
+        if keys and a_key is None:
+            a_key = keys[0]
+        if ev and a_media is None:
+            a_media = ev
+
+    # KeyResource: which attribute holds the media resource?
+    _dump("KeyResource", a_key)
+    if a_key is not None:
+        print("\n--- KeyResource: candidate payload attributes ---")
+        for attr in ("resource", "value", "v", "r", "res", "t", "time", "path"):
+            try:
+                if hasattr(a_key, attr):
+                    val = getattr(a_key, attr)
+                    print("  %-12s %-20s %s" % (attr, type(val).__name__, repr(val)[:50]))
+                else:
+                    print("  %-12s MISSING" % attr)
+            except BaseException as e:
+                print("  %-12s <raised %s>" % (attr, str(e)[:40]))
+
+    # A real media resource, to confirm regionSet (one was just added to a layer).
+    _dump("media resource", a_media)
+    if a_media is not None:
+        print("\n--- media resource: fields snapshot.py wants ---")
+        for attr in ("description", "path", "enabledVersion", "hasAudio",
+                     "regionSet", "regionSets", "name"):
+            try:
+                if hasattr(a_media, attr):
+                    val = getattr(a_media, attr)
+                    print("  %-16s %-20s %s" % (attr, type(val).__name__, repr(val)[:50]))
+                    if attr.startswith("regionSet") and val is not None:
+                        _dump("  regionSet detail", val, limit=40)
+                else:
+                    print("  %-16s MISSING" % attr)
+            except BaseException as e:
+                print("  %-16s <raised %s>" % (attr, str(e)[:40]))

@@ -30,13 +30,26 @@ class Media(object):
         self.regionSet = type("RS", (), {"name": "RegionSet A"})()
 
 
+class KeyResource(object):
+    """A key in a ResourceSequence. Real ones hold the media on `.resource`."""
+    def __init__(self, t, resource):
+        self.t = t
+        self.resource = resource
+
+
 class Seq(object):
-    """evalResource(t) -> whichever media the layer holds at t."""
-    def __init__(self, by_time):
+    """evalResource(t) -> whichever media the layer holds at t.
+
+    `evals` mirrors the live director finding that some layers hold keys but
+    return None from evalResource(tStart) -- set it False to reproduce that."""
+    def __init__(self, by_time, evals=True):
         self.by_time = by_time
-        self.keys = [type("K", (), {"t": t})() for t in by_time]
+        self.evals = evals
+        self.keys = [KeyResource(t, by_time[t]) for t in sorted(by_time)]
 
     def evalResource(self, t):
+        if not self.evals:
+            return None
         best = None
         for kt in sorted(self.by_time):
             if kt <= t:
@@ -44,15 +57,24 @@ class Seq(object):
         return best if best is not None else self.by_time[min(self.by_time)]
 
 
+class Module(object):
+    """Layers are all class "Layer"; the module is what distinguishes them."""
+
+
+class VariableVideoModule(Module):
+    pass
+
+
 class Layer(object):
-    def __init__(self, name, tStart, tEnd, media_by_time=None, renderEnable=True):
+    # Real layers carry no beat fields at all -- deliberately absent here.
+    def __init__(self, name, tStart, tEnd, media_by_time=None, renderEnable=True,
+                 evals=True):
         self.name = name
         self.tStart = tStart
         self.tEnd = tEnd
-        self.bStart = tStart * 2
-        self.bEnd = tEnd * 2
         self.renderEnable = renderEnable
-        self._seq = Seq(media_by_time) if media_by_time else None
+        self.module = VariableVideoModule() if media_by_time else Module()
+        self._seq = Seq(media_by_time, evals) if media_by_time else None
 
     def findSequence(self, field):
         if field != "video" or self._seq is None:
@@ -77,6 +99,10 @@ class Track(object):
         self.lengthInSec = length
         self.lengthInBeats = length * 2
         self.bpm = 120.0
+
+    def globalTimeToBeat(self, t):
+        """Beats aren't readable off layers; they come from the track."""
+        return t * 2
 
 
 class TM(object):
@@ -121,6 +147,8 @@ track1 = Track("Song 1", [
     nested,
     Layer("Muted", 0.0, 5.0, {0.0: clip_a}, renderEnable=False),
     Layer("No media", 10.0, 12.0),
+    # The live-director case: keys present, but evalResource returns None.
+    Layer("Eval blind", 0.0, 60.0, {0.0: clip_a}, evals=False),
 ])
 track2 = Track("Song 2", [])  # empty track
 
@@ -145,7 +173,7 @@ ok &= check("2 tracks", snap["trackCount"] == 2)
 
 t1 = snap["tracks"][0]
 names = [l["name"] for l in t1["layers"]]
-ok &= check("flattens groups (5 layers)", len(t1["layers"]) == 5, str(names))
+ok &= check("flattens groups (6 layers)", len(t1["layers"]) == 6, str(names))
 ok &= check("layerCount matches", t1["layerCount"] == len(t1["layers"]))
 ok &= check("nested group path",
             [l["groupPath"] for l in t1["layers"] if l["name"] == "Deep"] == [["Backdrops", "Inner"]],
@@ -162,6 +190,16 @@ ok &= check("hasAudio false preserved", v1["media"][1]["hasAudio"] is False)
 ok &= check("times", (v1["tStart"], v1["tEnd"]) == (0.0, 60.0))
 nomedia = [l for l in t1["layers"] if l["name"] == "No media"][0]
 ok &= check("layer with no video sequence", nomedia["media"] == [])
+
+# Regression: a layer whose sequence holds keys but whose evalResource returns
+# None must still report its media -- read off the keys, not just the eval.
+blind = [l for l in t1["layers"] if l["name"] == "Eval blind"][0]
+ok &= check("media found via keys when eval returns None",
+            [m["name"] for m in blind["media"]] == ["Opener"], str(blind["media"]))
+
+ok &= check("module type, not generic Layer", v1["type"] == "VariableVideoModule", v1["type"])
+ok &= check("beats derived from track", (v1["bStart"], v1["bEnd"]) == (0.0, 120.0),
+            str((v1["bStart"], v1["bEnd"])))
 
 print("\n== file written ==")
 path = snap["writtenTo"]
