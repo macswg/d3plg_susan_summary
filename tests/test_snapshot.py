@@ -85,11 +85,23 @@ class TM(object):
         self.setList = type("SL", (), {"name": "Main Setlist", "tracks": tracks})()
 
 
+class ProjectPaths(object):
+    """The real ProjectPathsManager exposes these as *methods*, not properties
+    -- the reason `project` came back null on the first live run."""
+    def __init__(self, folder):
+        self._folder = folder
+
+    def projectFolder(self):
+        return self._folder
+
+    def projectName(self):
+        return "SusanShow"
+
+
 def install(tm, project_dir):
     snapshot.GroupLayer = GroupLayer
     snapshot.guisystem = type("G", (), {"currentTransportManager": tm})()
-    snapshot.PathsManager = type("P", (), {"projectPath": project_dir,
-                                           "projectName": "SusanShow"})()
+    snapshot.state = type("S", (), {"projectPaths": ProjectPaths(project_dir)})()
     snapshot.resourceManager = type("RM", (), {
         "allResources": staticmethod(lambda t: [tm])})()
     snapshot.TransportManager = TM
@@ -158,6 +170,11 @@ ok &= check("file exists", path and os.path.isfile(path))
 if path and os.path.isfile(path):
     text = open(path).read()
     ok &= check("valid json on disk", json.loads(text)["trackCount"] == 2)
+    # Regression: the first live run wrote files that all claimed
+    # "writtenTo": null, because the dict was serialised before the field was
+    # set. The saved log must name itself.
+    ok &= check("on-disk copy names itself", json.loads(text)["writtenTo"] == path,
+                repr(json.loads(text)["writtenTo"]))
     ok &= check("indented + sorted (diffable)",
                 "\n  " in text and text.index('"capturedAt"') < text.index('"project"'))
 
@@ -186,10 +203,13 @@ ok &= check("unreadable field -> null", bad["tStart"] is None, str(bad))
 ok &= check("readable fields survive", bad["tEnd"] == 1.0, str(bad))
 
 print("\n== unwritable log dir ==")
-install(tm, os.path.join(tmpdir, "nul_x", "\0bad"))
+# A path with a NUL byte can't be created on any platform, so makedirs fails --
+# exercising the "director couldn't write" branch the UI surfaces.
+install(tm, "\0bad")
 snap6 = snapshot.capture()
 ok &= check("traversal still returns", snap6["trackCount"] == 2)
 ok &= check("writtenTo None, no crash", snap6["writtenTo"] is None, repr(snap6["writtenTo"]))
+ok &= check("failure recorded in debug", any("write failed" in d for d in snap6["debug"]), str(snap6["debug"]))
 
 print("\n" + ("ALL PASS" if ok else "FAILURES ABOVE"))
 sys.exit(0 if ok else 1)

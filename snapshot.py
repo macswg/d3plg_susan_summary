@@ -55,6 +55,21 @@ def _attr(obj, name, default=None):
     return default
 
 
+def _call(obj, name, default=None):
+    """Call a zero-arg method and return its result, or default. Never raises.
+
+    Needed alongside _attr because parts of the director expose data as methods
+    rather than properties -- ProjectPathsManager.projectName() / projectFolder()
+    are methods, and _attr deliberately skips callables."""
+    try:
+        method = getattr(obj, name, None)
+        if callable(method):
+            return method()
+    except BaseException:
+        pass
+    return default
+
+
 def _name_of(obj):
     """User-facing name. `name` first (it matches the liveUpdate resource path),
     `description` as fallback — same precedence as list_transports.py in
@@ -212,9 +227,12 @@ def _layer_records(layer, group_path, debug):
         return records
 
     try:
+        # type(layer) is "Layer" for nearly everything; the module is what
+        # actually distinguishes a Video layer from a Notch/Audio/Web one.
+        module = _attr(layer, "module")
         return [{
             "name": name,
-            "type": type(layer).__name__,
+            "type": type(module).__name__ if module is not None else type(layer).__name__,
             "groupPath": list(group_path),
             "renderEnable": bool(_attr(layer, "renderEnable", True)),
             "tStart": _num(_attr(layer, "tStart")),
@@ -248,41 +266,67 @@ def _track_record(track, debug):
 
 # --- output -----------------------------------------------------------------
 
-def _project_name():
-    paths = _g("PathsManager")
-    for attr in ("projectName", "currentProjectName"):
-        val = _attr(paths, attr)
-        if val:
-            return str(val)
-    project_path = _attr(paths, "projectPath") or _attr(paths, "project")
-    if project_path:
-        return os.path.basename(str(project_path).rstrip("/\\"))
+def _project_paths(debug):
+    """The ProjectPathsManager, wherever the director hangs it off."""
+    for holder_name, attr in (("state", "projectPaths"),
+                              ("guisystem", "projectPaths"),
+                              ("state", "paths"),
+                              ("guisystem", "paths")):
+        holder = _g(holder_name)
+        if holder is None:
+            continue
+        paths = _attr(holder, attr) or _call(holder, attr)
+        if paths is not None:
+            return paths
+    debug.append("no ProjectPathsManager found")
     return None
 
 
-def _log_dir():
+def _project_name(debug):
+    """ProjectPathsManager exposes these as *methods*, not properties."""
+    paths = _project_paths(debug)
+    if paths is None:
+        return None
+    for name in ("projectName", "projectFileName", "folderName"):
+        val = _call(paths, name)
+        if val:
+            return str(val)
+    folder = _call(paths, "projectFolder")
+    if folder:
+        return os.path.basename(str(folder).rstrip("/\\"))
+    debug.append("project name unresolved")
+    return None
+
+
+def _log_dir(debug):
     """{project}/plugins/susan_summary/logs, falling back to this file's own
-    directory when the project path can't be resolved."""
-    paths = _g("PathsManager")
-    project_path = _attr(paths, "projectPath") or _attr(paths, "project")
-    if project_path:
-        base = os.path.join(str(project_path), "plugins", MODULE_DIR_NAME)
+    directory when the project folder can't be resolved (which is itself inside
+    the project's plugins folder, so the log still lands somewhere sensible)."""
+    paths = _project_paths(debug)
+    folder = _call(paths, "projectFolder") if paths is not None else None
+    if folder:
+        base = os.path.join(str(folder), "plugins", MODULE_DIR_NAME)
     else:
+        debug.append("project folder unresolved; logging beside snapshot.py")
         base = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base, "logs")
 
 
 def _write(snapshot, debug):
     """Write the snapshot to disk. Returns the path, or None (the browser still
-    gets the JSON and can download it, so a read-only path is not fatal)."""
+    gets the JSON and can download it, so a read-only path is not fatal).
+
+    Sets snapshot["writtenTo"] *before* serialising so the file on disk names
+    itself; setting it afterwards would leave every saved log claiming null."""
     try:
-        directory = _log_dir()
+        directory = _log_dir(debug)
         if not os.path.isdir(directory):
             os.makedirs(directory)
         stamp = time.strftime("%Y-%m-%dT%H-%M-%S", time.gmtime())
         project = snapshot.get("project") or "project"
         safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in project)
         path = os.path.join(directory, "{0}_{1}.json".format(stamp, safe))
+        snapshot["writtenTo"] = path
         handle = open(path, "w")
         try:
             # Sorted keys + indent so consecutive snapshots diff cleanly — the
@@ -293,6 +337,7 @@ def _write(snapshot, debug):
         return path
     except BaseException as error:
         debug.append("write failed: {0}".format(error))
+        snapshot["writtenTo"] = None
         return None
 
 
@@ -313,7 +358,7 @@ def capture(transport_name=None):
         "debug": debug,
     }
     try:
-        snapshot["project"] = _project_name()
+        snapshot["project"] = _project_name(debug)
 
         tm = _resolve_transport(transport_name, debug)
         if tm is None:
@@ -333,7 +378,7 @@ def capture(transport_name=None):
         snapshot["tracks"] = [_track_record(t, debug) for t in tracks]
         snapshot["trackCount"] = len(snapshot["tracks"])
 
-        snapshot["writtenTo"] = _write(snapshot, debug)
+        _write(snapshot, debug)  # sets snapshot["writtenTo"] itself
     except BaseException as error:
         snapshot["error"] = str(error)
 

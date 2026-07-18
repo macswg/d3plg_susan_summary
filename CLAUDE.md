@@ -32,6 +32,27 @@ resolves either way — use it instead of referencing those names directly.
 - Python "returns" data by printing JSON to stdout; it arrives in the response's
   `pythonLog`.
 - Media `path` has an `.apx` suffix that must be stripped.
+- **Some director data is exposed as methods, not properties.**
+  `ProjectPathsManager.projectFolder()` / `.projectName()` are methods, and
+  `_attr()` deliberately skips callables — use `_call()` for those. This cost a
+  live run: `project` came back null on the first real capture.
+- `type(layer).__name__` is `"Layer"` for nearly everything. The *module* type
+  (`type(layer.module).__name__`) is what distinguishes Video / Notch / Audio /
+  Web layers.
+- Anything written into the snapshot dict must be set **before** `_write`
+  serialises it. `writtenTo` was set afterwards at first, so every saved log
+  claimed `"writtenTo": null` while sitting at that exact path.
+
+## Confirmed against a real director (2026-07-18)
+
+Working: setlist resolution (`automatic` set list), track names/bpm/lengths,
+layer names, `tStart`/`tEnd`, `renderEnable`, media name/path/version,
+`.apx` stripping, the log file write.
+
+Unconfirmed: `bStart`/`bEnd` came back null — the beat-field names are still
+wrong. `regionSet` was null throughout, which may be correct or may be the wrong
+attribute. Run `tools/probe.py` on the director to settle both; it dumps every
+public member of a real track, layer, module, sequence and media resource.
 
 ## Design decisions worth keeping
 
