@@ -92,23 +92,82 @@ class BadLayer(Layer):
         pass
 
 
+class Tag(object):
+    def __init__(self, text):
+        self.text = text
+
+
+class Cue(object):
+    def __init__(self, note=None, section=False, tags=None):
+        self.note = note
+        self.section = section
+        self._tags = tags or {}      # {tagType: text}
+
+
 class Track(object):
-    def __init__(self, description, layers, length=120.0):
+    """`cues` maps beat -> Cue. `tc_at` is the beat of the timecode tag, if any;
+    a track without one has no timecode at all (as on the real director, where
+    beatToGlobalTime just echoes the track time back)."""
+    def __init__(self, description, layers, length=120.0, cues=None, tc_at=None):
         self.description = description
         self.layers = layers
         self.lengthInSec = length
         self.lengthInBeats = length * 2
         self.bpm = 120.0
+        self._cues = dict(cues or {})
+        if tc_at is not None:
+            cue = self._cues.setdefault(tc_at, Cue())
+            cue._tags[0] = "1:00:00:0"   # tag type 0 is timecode
+            self._tc_at = tc_at
+        else:
+            self._tc_at = None
 
-    def globalTimeToBeat(self, t):
+    def timeToBeat(self, t):
         """Beats aren't readable off layers; they come from the track."""
         return t * 2
+
+    def beatToTime(self, b):
+        return b / 2.0
+
+    def cueBeats(self):
+        return sorted(self._cues)
+
+    def cueAtBeat(self, b):
+        return self._cues.get(b)
+
+    def tagAtBeat(self, b, tag_type):
+        cue = self._cues.get(b)
+        if cue is None:
+            return None
+        text = cue._tags.get(tag_type)
+        return Tag(text) if text else None
+
+    def beatToSection(self, b):
+        return sum(1 for beat in sorted(self._cues)
+                   if beat < b and self._cues[beat].section)
+
+    def beatToGlobalTime(self, beat, clock_type, limited):
+        """With a timecode tag, 1 hour plus the offset past the tag; without
+        one, the track time -- which is what the real director does."""
+        if self._tc_at is None:
+            return beat / 2.0
+        return 3600.0 + (beat - self._tc_at) / 2.0
+
+
+class Timecode(object):
+    def fps(self):
+        return 30.0
 
 
 class TM(object):
     def __init__(self, name, tracks):
         self.name = name
         self.setList = type("SL", (), {"name": "Main Setlist", "tracks": tracks})()
+
+    def beatToTimecode(self, beat):
+        """Only used to read the frame rate off; the per-track conversion is
+        what actually produces timecodes."""
+        return Timecode()
 
 
 class ProjectPaths(object):
@@ -154,8 +213,13 @@ track1 = Track("Song 1", [
     Layer("No media", 10.0, 12.0),
     # The live-director case: keys present, but evalResource returns None.
     Layer("Eval blind", 0.0, 60.0, {0.0: clip_a}, evals=False),
-])
-track2 = Track("Song 2", [])  # empty track
+], cues={
+    0.0: Cue(note="opening note", section=True),
+    10.0: Cue(section=True),
+    20.0: Cue(note="mid-show", tags={1: "2.34"}),
+    30.0: Cue(),                      # bare cue: nothing to record
+}, tc_at=10.0)
+track2 = Track("Song 2", [])  # empty track, and no timecode tags
 
 tmpdir = tempfile.mkdtemp()
 tm = TM("default", [track1, track2])
@@ -209,6 +273,33 @@ ok &= check("media found via keys when eval returns None",
 ok &= check("module type, not generic Layer", v1["type"] == "VariableVideoModule", v1["type"])
 ok &= check("beats derived from track", (v1["bStart"], v1["bEnd"]) == (0.0, 120.0),
             str((v1["bStart"], v1["bEnd"])))
+
+print("\n== timecode ==")
+ok &= check("track with tc tags flagged", t1["hasTimecode"] is True, str(t1["hasTimecode"]))
+ok &= check("fps reported", t1["fps"] == 30.0, repr(t1["fps"]))
+# The tag sits at beat 10 = 1 hour; Video 1 starts at beat 0, i.e. 5s earlier.
+ok &= check("layer timecode derived", v1["tcStart"] == "00:59:55.00", repr(v1["tcStart"]))
+ok &= check("layer timecode out", v1["tcEnd"] == "01:00:55.00", repr(v1["tcEnd"]))
+
+t2 = tr0["tracks"][1]
+ok &= check("track without tc tags flagged", t2["hasTimecode"] is False, str(t2["hasTimecode"]))
+ok &= check("no fps without timecode", t2["fps"] is None, repr(t2["fps"]))
+
+print("\n== cues, sections and notes ==")
+cues = t1["cues"]
+ok &= check("bare cue omitted", len(cues) == 3, str([c["beat"] for c in cues]))
+ok &= check("section flagged", [c["isSection"] for c in cues] == [True, True, False],
+            str([c["isSection"] for c in cues]))
+ok &= check("notes captured",
+            [c["note"] for c in cues] == ["opening note", None, "mid-show"],
+            str([c["note"] for c in cues]))
+ok &= check("tags captured", cues[2]["tags"] == [{"type": "cue", "text": "2.34"}],
+            str(cues[2]["tags"]))
+ok &= check("tc tag captured", cues[1]["tags"] == [{"type": "tc", "text": "1:00:00:0"}],
+            str(cues[1]["tags"]))
+ok &= check("cue timecode", cues[1]["timecode"] == "01:00:00.00", repr(cues[1]["timecode"]))
+ok &= check("cue track time", cues[0]["t"] == 0.0, repr(cues[0]["t"]))
+ok &= check("no cue timecode without tags", t2["cues"] == [], str(t2["cues"]))
 
 print("\n== file written ==")
 path = snap["writtenTo"]

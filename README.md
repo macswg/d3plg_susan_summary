@@ -32,6 +32,10 @@ embeds plugins in an iframe with
 `allow-downloads` — so downloads, the file picker and the clipboard are all
 blocked there. The director writes the file instead, which works regardless.
 
+Where a track carries timecode tags, times are shown and logged as timecode
+(`01:00:02.27`) instead of seconds; tracks without them keep seconds. Each track
+also records its cues — section breaks, notes and TC/CUE/MIDI tags.
+
 Snapshots land in `<project>/plugins/susan_summary/logs/` (next to the plugin), named
 `<timestamp>_<project>.json`. Keys are sorted and indented so consecutive
 captures diff cleanly. `logs/` is gitignored here — commit it in the project

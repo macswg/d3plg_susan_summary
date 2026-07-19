@@ -80,9 +80,31 @@ module types, `tStart`/`tEnd`, derived beats, media name/path/version/regionSet,
 Re-run `tools/probe.py` when a field comes back empty; it dumps every public
 member of a real track, layer, module, sequence, key and media resource.
 
+## Timecode
+
+Use **`track.beatToGlobalTime(beat, clockType, False)`** — it is per track.
+Do **not** use `TransportManager.beatToTimecode()`: it is transport-level and
+reports the *active* track's timecode for every track, which was measured
+giving a track with no tags a confident, wrong `01:00:13`. It is used here only
+to read the frame rate (`.fps()`), since the clock type isn't exposed directly.
+
+A track has timecode **iff it carries a TC tag** (`tagAtBeat(beat, 0)`). Without
+one, `beatToGlobalTime` echoes the track time straight back — so `hasTimecode`
+gates every `tcStart`/`tcEnd`/`cues[].timecode`, and they are null otherwise.
+Never show a timecode a track doesn't have.
+
+Tag types: `0` = TC, `1` = CUE, `2` = MIDI. Frame rates map to clock types
+`{23.976: 0, 24: 1, 25: 2, 29.97: 3, 29.97DF: 4, 30: 5}`.
+
+Cues come from `track.cueBeats()` + `track.cueAtBeat(beat)`; the `Cue` carries
+`note` and `section`. Cues with no section, note or tag are dropped — a bare cue
+is timeline noise, not showfile state.
+
 ## Schema
 
-`schemaVersion` is **2**. A snapshot holds a `transports` array — `capture()`
+`schemaVersion` is **3** — tracks gained `cues` (section breaks, notes, tags),
+`hasTimecode`/`fps`, and layers gained `tcStart`/`tcEnd`. A snapshot holds a
+`transports` array — `capture()`
 defaults to *every* transport, since a state log should cover the whole showfile
 unless deliberately narrowed. Version 1 had a single top-level
 `transport`/`setlist`/`tracks`; the four v1 logs in the test project are not

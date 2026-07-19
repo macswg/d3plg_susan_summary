@@ -38,7 +38,9 @@ __all__ = ["capture", "list_transports"]
 
 # 2: snapshots hold a `transports` array (capture() defaults to every transport)
 #    instead of the single top-level transport/setlist/tracks of version 1.
-SCHEMA_VERSION = 2
+# 3: tracks carry `cues` (section breaks, notes, tags) and, where the track has
+#    timecode tags, `tcStart`/`tcEnd` on layers and `timecode` on cues.
+SCHEMA_VERSION = 3
 MODULE_DIR_NAME = "susan_summary"
 
 
@@ -149,6 +151,134 @@ def _resolve_transport(transport_name, debug):
     return None
 
 
+# --- timecode ---------------------------------------------------------------
+
+# Timecode.SMPTE* constants, by frame rate. Confirmed on a real director:
+# {0: 23.976, 1: 24, 2: 25, 3: 29.97, 4: 29.97DF, 5: 30}.
+_CLOCK_BY_FPS = ((23.976, 0), (24.0, 1), (25.0, 2), (29.97, 3), (30.0, 5))
+
+# Tag types, as returned by Track.tagAtBeat(beat, type). 0 is timecode.
+TAG_TC = 0
+_TAG_NAMES = {0: "tc", 1: "cue", 2: "midi"}
+
+
+def _timecode_settings(tm, debug):
+    """The transport's frame rate and matching SMPTE clock type, needed by
+    Track.beatToGlobalTime(). Read the fps off a Timecode the transport builds,
+    since the clock type isn't exposed directly."""
+    fps = None
+    try:
+        fps = float(tm.beatToTimecode(0.0).fps())
+    except BaseException as error:
+        debug.append("timecode fps unavailable: {0}".format(error))
+        return None
+
+    clock_type = 5
+    for rate, value in _CLOCK_BY_FPS:
+        if abs(fps - rate) < 0.01:
+            clock_type = value
+            break
+    return {"fps": fps, "clockType": clock_type}
+
+
+def _has_timecode(track, cue_beats):
+    """True when the track carries a timecode tag. Without one,
+    beatToGlobalTime just echoes the track time back and there is no real
+    timecode to show -- verified on a track with no tags."""
+    for beat in cue_beats:
+        try:
+            if track.tagAtBeat(beat, TAG_TC) is not None:
+                return True
+        except BaseException:
+            continue
+    return False
+
+
+def _format_timecode(seconds, fps):
+    """HH:MM:SS.FF, matching how Designer renders a Timecode."""
+    if seconds is None or fps in (None, 0):
+        return None
+    try:
+        sign = "-" if seconds < 0 else ""
+        total = abs(float(seconds))
+        whole = int(total)
+        frames = int(round((total - whole) * fps))
+        if frames >= int(round(fps)):  # rounded up into the next second
+            frames = 0
+            whole += 1
+        return "{0}{1:02d}:{2:02d}:{3:02d}.{4:02d}".format(
+            sign, whole // 3600, (whole % 3600) // 60, whole % 60, frames)
+    except BaseException:
+        return None
+
+
+def _timecode_at(track, beat, tc, debug):
+    """Timecode string for a beat on this track, or None when the track has no
+    timecode tags. Per-track on purpose: TransportManager.beatToTimecode() is
+    transport-level and reports the active track's timecode for every track."""
+    if not tc or beat is None or not tc.get("hasTags"):
+        return None
+    try:
+        # tcTagsLimitedToSection=False: use the nearest preceding tag wherever
+        # it is, rather than restarting at each section.
+        seconds = track.beatToGlobalTime(beat, tc["clockType"], False)
+    except BaseException as error:
+        debug.append("beatToGlobalTime failed: {0}".format(error))
+        return None
+    return _format_timecode(seconds, tc["fps"])
+
+
+def _cue_records(track, tc, debug):
+    """Section breaks, notes and tags along the track -- the human-readable
+    structure of the show, which layer timings alone don't convey."""
+    records = []
+    try:
+        beats = list(track.cueBeats() or [])
+    except BaseException as error:
+        debug.append("cueBeats failed: {0}".format(error))
+        return records
+
+    for beat in beats:
+        try:
+            cue = track.cueAtBeat(beat)
+        except BaseException:
+            continue
+        if cue is None:
+            continue
+
+        tags = []
+        for tag_type in sorted(_TAG_NAMES):
+            try:
+                tag = track.tagAtBeat(beat, tag_type)
+            except BaseException:
+                continue
+            text = _attr(tag, "text") if tag is not None else None
+            if text:
+                tags.append({"type": _TAG_NAMES[tag_type], "text": str(text)})
+
+        note = _attr(cue, "note")
+        record = {
+            "beat": _num(beat),
+            "isSection": bool(_attr(cue, "section")),
+            "note": str(note) if note else None,
+            "tags": tags,
+        }
+        try:
+            record["section"] = track.beatToSection(beat)
+        except BaseException:
+            record["section"] = None
+        try:
+            record["t"] = _num(track.beatToTime(beat))
+        except BaseException:
+            record["t"] = None
+        record["timecode"] = _timecode_at(track, beat, tc, debug)
+
+        # A cue with nothing on it is timeline noise, not showfile state.
+        if record["isSection"] or record["note"] or tags:
+            records.append(record)
+    return records
+
+
 # --- traversal --------------------------------------------------------------
 
 def _media_records(layer, debug):
@@ -248,7 +378,7 @@ def _beat(track, t, debug):
     return None
 
 
-def _layer_records(layer, group_path, track, debug):
+def _layer_records(layer, group_path, track, tc, debug):
     """Flatten a layer, recursing into groups. Mirrors getLayerStartTime() in
     ref/prewarmAllLayers2sec.py, except nothing is skipped: that script drops
     layers with renderEnable false, but a disabled layer is still showfile state,
@@ -264,7 +394,7 @@ def _layer_records(layer, group_path, track, debug):
     if is_group:
         records = []
         for sublayer in _attr(layer, "layers", []) or []:
-            records.extend(_layer_records(sublayer, group_path + [name], track, debug))
+            records.extend(_layer_records(sublayer, group_path + [name], track, tc, debug))
         return records
 
     try:
@@ -280,6 +410,9 @@ def _layer_records(layer, group_path, track, debug):
             "tEnd": _num(_attr(layer, "tEnd")),
             "bStart": _beat(track, _attr(layer, "tStart"), debug),
             "bEnd": _beat(track, _attr(layer, "tEnd"), debug),
+            # Only present when the track actually carries timecode tags.
+            "tcStart": _timecode_at(track, _beat(track, _attr(layer, "tStart"), debug), tc, debug),
+            "tcEnd": _timecode_at(track, _beat(track, _attr(layer, "tEnd"), debug), tc, debug),
             "media": _media_records(layer, debug),
         }]
     except BaseException as error:
@@ -291,15 +424,30 @@ def _layer_records(layer, group_path, track, debug):
                  "error": str(error)[:200]}]
 
 
-def _track_record(track, debug):
+def _track_record(track, settings, debug):
+    # Resolve this track's timecode once; every layer and cue on it reuses it.
+    cue_beats = []
+    try:
+        cue_beats = list(track.cueBeats() or [])
+    except BaseException:
+        pass
+    tc = None
+    if settings:
+        tc = dict(settings)
+        tc["hasTags"] = _has_timecode(track, cue_beats)
+
     layers = []
     for layer in _attr(track, "layers", []) or []:
-        layers.extend(_layer_records(layer, [], track, debug))
+        layers.extend(_layer_records(layer, [], track, tc, debug))
+
     return {
         "name": _name_of(track),
         "lengthInSec": _num(_attr(track, "lengthInSec")),
         "lengthInBeats": _num(_attr(track, "lengthInBeats")),
         "bpm": _num(_attr(track, "bpm")),
+        "hasTimecode": bool(tc and tc.get("hasTags")),
+        "fps": tc["fps"] if tc and tc.get("hasTags") else None,
+        "cues": _cue_records(track, tc, debug),
         "layerCount": len(layers),
         "layers": layers,
     }
@@ -454,7 +602,7 @@ def list_transports():
                           "error": str(error), "debug": debug}))
 
 
-def _transport_record(tm, debug):
+def _transport_record(tm, debug, settings=None):
     """One transport: its setlist and every track on it."""
     record = {
         "name": _name_of(tm),
@@ -468,7 +616,11 @@ def _transport_record(tm, debug):
         record["error"] = "transport has no setlist"
         return record
     record["setlist"] = _name_of(setlist)
-    record["tracks"] = [_track_record(t, debug)
+    # Frame rate comes from the transport, so resolve it once per transport
+    # rather than per track.
+    if settings is None:
+        settings = _timecode_settings(tm, debug)
+    record["tracks"] = [_track_record(t, settings, debug)
                         for t in (_attr(setlist, "tracks", []) or [])]
     record["trackCount"] = len(record["tracks"])
     return record

@@ -203,23 +203,66 @@ function renderTrack(track) {
   summary.textContent = track.name || 'Untitled track'
   const count = document.createElement('span')
   count.className = 'count'
-  count.textContent = `${track.layerCount} layers · ${secs(track.lengthInSec)}`
+  const cues = track.cues || []
+  const marks = cues.filter((c) => c.isSection).length
+  count.textContent =
+    `${track.layerCount} layers · ${secs(track.lengthInSec)}` +
+    (marks ? ` · ${marks} sections` : '') +
+    (track.hasTimecode ? ` · timecode @ ${track.fps}fps` : '')
   summary.append(count)
   details.append(summary)
 
+  if (cues.length) details.append(renderCues(track, cues))
+
   const table = document.createElement('table')
+  // Times read as timecode when the track has timecode tags, seconds otherwise.
+  const unit = track.hasTimecode ? 'Timecode in' : 'Start'
   table.innerHTML =
-    '<thead><tr><th>Layer</th><th>Type</th><th>Start</th><th>End</th><th>Media</th></tr></thead>'
+    `<thead><tr><th>Layer</th><th>Type</th><th>${unit}</th><th>${
+      track.hasTimecode ? 'Timecode out' : 'End'
+    }</th><th>Media</th></tr></thead>`
   const tbody = document.createElement('tbody')
   for (const layer of track.layers || []) {
-    tbody.append(renderLayer(layer))
+    tbody.append(renderLayer(layer, track))
   }
   table.append(tbody)
   details.append(table)
   return details
 }
 
-function renderLayer(layer) {
+/** Section breaks, notes and tags — the show's structure, which layer timings
+ * alone don't convey. */
+function renderCues(track, cues) {
+  const wrap = document.createElement('div')
+  wrap.className = 'cues'
+  const table = document.createElement('table')
+  table.innerHTML = `<thead><tr><th>${
+    track.hasTimecode ? 'Timecode' : 'Time'
+  }</th><th>Section</th><th>Tags</th><th>Note</th></tr></thead>`
+  const tbody = document.createElement('tbody')
+
+  for (const cue of cues) {
+    const tr = document.createElement('tr')
+    const cells = [
+      cue.timecode || secs(cue.t),
+      cue.isSection ? `§ ${cue.section ?? ''}`.trim() : '',
+      (cue.tags || []).map((t) => `${t.type.toUpperCase()} ${t.text}`).join(', '),
+      cue.note || '',
+    ]
+    for (const [i, text] of cells.entries()) {
+      const td = document.createElement('td')
+      td.textContent = text
+      if (i === 3 && text) td.className = 'note'
+      tr.append(td)
+    }
+    tbody.append(tr)
+  }
+  table.append(tbody)
+  wrap.append(table)
+  return wrap
+}
+
+function renderLayer(layer, track) {
   const tr = document.createElement('tr')
   if (layer.renderEnable === false) tr.className = 'disabled-layer'
 
@@ -227,7 +270,10 @@ function renderLayer(layer) {
     ? `${layer.groupPath.join(' / ')} / ${layer.name}`
     : layer.name
 
-  const cells = [name, layer.type || '—', secs(layer.tStart), secs(layer.tEnd)]
+  // Prefer timecode; fall back to seconds where the track has no timecode tags.
+  const start = (track?.hasTimecode && layer.tcStart) || secs(layer.tStart)
+  const end = (track?.hasTimecode && layer.tcEnd) || secs(layer.tEnd)
+  const cells = [name, layer.type || '—', start, end]
   for (const text of cells) {
     const td = document.createElement('td')
     td.textContent = text
