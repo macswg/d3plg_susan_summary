@@ -23,9 +23,14 @@ Then open it from the Plugins menu in Designer.
 
 | Control | What it does |
 | --- | --- |
-| **Capture snapshot** | Snapshots the setlists in scope. |
+| **Capture Snapshot to logs** | Writes a snapshot of the setlists in scope to `logs/` on the director. |
 | **Transport** dropdown | Scope of the capture: **all transports** (default), the active one only, or a named one. ↻ re-queries the list. |
-| **Download JSON** | Opens a Save As dialog for the last snapshot. Falls back to a plain download, then the clipboard, in browsers without the File System Access API. |
+
+There is deliberately no browser-side download. Designer's plugin launcher
+embeds plugins in an iframe with
+`sandbox="allow-same-origin allow-scripts allow-popups allow-forms"` — no
+`allow-downloads` — so downloads, the file picker and the clipboard are all
+blocked there. The director writes the file instead, which works regardless.
 
 Snapshots land in `<project>/plugins/susan_summary/logs/` (next to the plugin), named
 `<timestamp>_<project>.json`. Keys are sorted and indented so consecutive

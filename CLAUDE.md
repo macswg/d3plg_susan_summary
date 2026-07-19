@@ -95,6 +95,23 @@ Scopes: `capture()` = all, `capture(active_only=True)` = active,
 A transport that fails (e.g. no setlist) records its error in its own entry
 rather than aborting the capture — one bad transport must not cost the others.
 
+## No browser-side export — don't re-add it
+
+Designer's plugin launcher (`http://localhost/`) embeds plugins in an iframe
+with `sandbox="allow-same-origin allow-scripts allow-popups allow-forms"`.
+Inside it, measured directly:
+
+- `showSaveFilePicker` → `SecurityError: Cross origin sub frames aren't allowed
+  to show a file picker`
+- anchor download → silently blocked, `allow-downloads` is absent
+- `navigator.clipboard.writeText` → rejected
+
+Popups don't escape it either (no `allow-popups-to-escape-sandbox`). A Download
+button, a Save As dialog and a director-side "save copy to path" were all built
+and then removed — the director already writes the log to `logs/`, which is the
+deliverable. If someone asks for a download again, the answer is to open the
+plugin URL directly in a browser, not to add a button that cannot work.
+
 ## Design decisions worth keeping
 
 - **Every layer is logged**, including `renderEnable == false` ones (flagged, not

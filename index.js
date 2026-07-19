@@ -11,14 +11,12 @@ const MODULE_NAME = 'susan_summary'
 const API = '/api/session/python'
 
 let registered = false
-let lastSnapshot = null
 
 const $ = (id) => document.getElementById(id)
 const els = {
   capture: $('capture'),
   transport: $('transport'),
   refresh: $('refresh'),
-  download: $('download'),
   status: $('status'),
   summary: $('summary'),
   tracks: $('tracks'),
@@ -123,8 +121,6 @@ async function capture() {
       throw new Error(`Unexpected director output: ${raw.slice(0, 200)}`)
     }
 
-    lastSnapshot = snapshot
-    els.download.disabled = false
     render(snapshot)
 
     if (snapshot.error) {
@@ -132,116 +128,18 @@ async function capture() {
     } else if (snapshot.writtenTo) {
       setStatus(`Saved to ${snapshot.writtenTo}`, 'ok')
     } else {
-      // The traversal worked but the director couldn't write — the operator can
-      // still keep the log via the download button.
-      setStatus('Captured, but the log file could not be written. Use Download JSON.', 'err')
+      // The traversal worked but the director couldn't write; debug says why.
+      const why = (snapshot.debug || []).find((d) => d.startsWith('write failed'))
+      setStatus(
+        `Captured, but the log file could not be written${why ? ` — ${why}` : ''}`,
+        'err',
+      )
     }
   } catch (error) {
     setStatus(error.message, 'err')
   } finally {
     els.capture.disabled = false
   }
-}
-
-async function download() {
-  if (!lastSnapshot) return
-  const stamp = (lastSnapshot.capturedAt || '').replace(/:/g, '-') || 'snapshot'
-  const name = `${stamp}_${lastSnapshot.project || 'project'}.json`
-  const text = JSON.stringify(lastSnapshot, null, 2)
-  let pickerFailure = null
-
-  // Show a real Save As dialog where the API exists. A plain `download`
-  // attribute saves silently to the browser's download folder, which gives the
-  // operator no say in where the log lands.
-  if (window.showSaveFilePicker) {
-    try {
-      const handle = await window.showSaveFilePicker({
-        suggestedName: name,
-        types: [{ description: 'JSON snapshot', accept: { 'application/json': ['.json'] } }],
-      })
-      const writable = await handle.createWritable()
-      await writable.write(text)
-      await writable.close()
-      setStatus(`Saved to ${handle.name}`, 'ok')
-      return
-    } catch (error) {
-      // Cancelling the dialog is a decision, not a failure -- don't then go and
-      // download the file anyway.
-      if (error.name === 'AbortError') {
-        setStatus('Save cancelled', '')
-        return
-      }
-      // Anything else (API blocked in an embedded browser, blocked in a
-      // cross-origin iframe, permissions) falls through to the download below --
-      // but say why, otherwise a silently-missing dialog is unexplainable.
-      pickerFailure = `${error.name}: ${error.message}`
-    }
-  } else {
-    pickerFailure = 'showSaveFilePicker unavailable'
-  }
-  if (pickerFailure) {
-    console.warn('Save As dialog unavailable —', pickerFailure,
-      '| in iframe:', window.self !== window.top,
-      '| secure context:', window.isSecureContext)
-  }
-
-  const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }))
-  const link = document.createElement('a')
-  link.href = url
-  link.download = name
-  // The anchor must be in the document for the click to count, and the blob URL
-  // must outlive the click -- revoking it synchronously cancels the download.
-  // (Both were wrong before, which is why this button did nothing.)
-  link.style.display = 'none'
-  document.body.append(link)
-  link.click()
-  setTimeout(() => {
-    link.remove()
-    URL.revokeObjectURL(url)
-  }, 10_000)
-
-  // Designer's embedded browser may block downloads outright, so offer the
-  // clipboard as a fallback the operator can actually use.
-  // Designer's plugin launcher embeds plugins in a sandboxed iframe without
-  // allow-downloads, so the click above may do nothing at all and the clipboard
-  // API is blocked too. Detect that and show the JSON for manual copying --
-  // the only export that survives in there.
-  const blocked = window.self !== window.top
-  try {
-    await navigator.clipboard.writeText(text)
-    setStatus(`Downloading ${name} — also copied to clipboard`, 'ok')
-  } catch {
-    if (blocked) {
-      showRawJson(text, name)
-      return
-    }
-    setStatus(`Downloading ${name}`, 'ok')
-  }
-}
-
-/** Last-resort export for the plugin launcher, whose sandbox blocks downloads,
- * the file picker and the clipboard alike: put the JSON on screen, selected,
- * so Ctrl+C works. The director-side log file is unaffected by any of this. */
-function showRawJson(text, name) {
-  const existing = document.getElementById('raw')
-  if (existing) existing.remove()
-
-  const wrap = document.createElement('div')
-  wrap.id = 'raw'
-  const note = document.createElement('p')
-  note.className = 'sub'
-  note.textContent =
-    `This plugin window blocks downloads, so ${name} could not be saved from here. ` +
-    'The snapshot is already written on the director (see the path above). ' +
-    'Press Ctrl+C to copy the JSON below, or open this plugin directly in a browser to download it.'
-  const area = document.createElement('textarea')
-  area.readOnly = true
-  area.value = text
-  wrap.append(note, area)
-  els.status.after(wrap)
-  area.focus()
-  area.select()
-  setStatus(`Could not download ${name} — copy it below`, 'err')
 }
 
 // --- rendering --------------------------------------------------------------
@@ -361,7 +259,6 @@ function renderLayer(layer) {
 }
 
 els.capture.addEventListener('click', capture)
-els.download.addEventListener('click', download)
 els.refresh.addEventListener('click', loadTransports)
 
 // Offer the real transport list up front rather than making the operator guess.
