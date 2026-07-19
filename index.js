@@ -74,20 +74,23 @@ async function loadTransports() {
     if (result.error) throw new Error(result.error)
 
     els.transport.innerHTML = ''
-    const active = document.createElement('option')
-    active.value = ''
-    active.textContent = result.current
-      ? `Active transport (${result.current})`
-      : 'Active transport'
-    els.transport.append(active)
-
-    for (const name of result.transports || []) {
+    const add = (value, label) => {
       const option = document.createElement('option')
-      option.value = name
-      option.textContent = name === result.current ? `${name} — active` : name
+      option.value = value
+      option.textContent = label
       els.transport.append(option)
     }
-    if (previous && result.transports?.includes(previous)) {
+
+    // Default is everything -- a state log should capture the whole showfile
+    // unless the operator narrows it deliberately.
+    const count = (result.transports || []).length
+    add('', count ? `All transports (${count})` : 'All transports')
+    add('@active', result.current ? `Active only (${result.current})` : 'Active only')
+    for (const name of result.transports || []) {
+      add(name, name === result.current ? `${name} — active` : name)
+    }
+
+    if (previous && [...els.transport.options].some((o) => o.value === previous)) {
       els.transport.value = previous
     }
   } catch (error) {
@@ -101,7 +104,9 @@ async function capture() {
   setStatus('Capturing…', 'busy')
   try {
     await register()
-    const arg = transport ? JSON.stringify(transport) : ''
+    // '' -> every transport (default), '@active' -> the active one, else by name.
+    const arg =
+      transport === '' ? '' : transport === '@active' ? 'active_only=True' : JSON.stringify(transport)
     const data = await post('/execute', {
       moduleName: MODULE_NAME,
       script: `capture(${arg})`,
@@ -173,14 +178,17 @@ async function download() {
 const secs = (n) => (typeof n === 'number' ? `${n.toFixed(2)}s` : '—')
 
 function render(snapshot) {
-  const layerCount = (snapshot.tracks || []).reduce((n, t) => n + (t.layerCount || 0), 0)
+  const transports = snapshot.transports || []
+  const allTracks = transports.flatMap((t) => t.tracks || [])
+  const layerCount = allTracks.reduce((n, t) => n + (t.layerCount || 0), 0)
+
   els.summary.hidden = false
   els.summary.innerHTML = ''
   const facts = [
     ['Project', snapshot.project],
-    ['Transport', snapshot.transport],
-    ['Setlist', snapshot.setlist],
-    ['Tracks', snapshot.trackCount],
+    ['Scope', snapshot.scope === 'all' ? 'all transports' : snapshot.scope],
+    ['Transports', snapshot.transportCount],
+    ['Tracks', allTracks.length],
     ['Layers', layerCount],
     ['Captured', snapshot.capturedAt],
   ]
@@ -194,9 +202,30 @@ function render(snapshot) {
   }
 
   els.tracks.innerHTML = ''
-  for (const track of snapshot.tracks || []) {
-    els.tracks.append(renderTrack(track))
+  for (const transport of transports) {
+    els.tracks.append(renderTransport(transport, transports.length > 1))
   }
+}
+
+/** A transport heading with its tracks. With only one transport the heading
+ * would be redundant chrome, so the tracks are shown directly. */
+function renderTransport(transport, showHeading) {
+  const wrap = document.createElement('div')
+  if (showHeading) {
+    const heading = document.createElement('h2')
+    heading.className = 'transport-heading'
+    heading.textContent = transport.name || '(unnamed transport)'
+    const meta = document.createElement('span')
+    meta.textContent = transport.error
+      ? ` — ${transport.error}`
+      : ` — setlist ${transport.setlist || '(none)'}, ${transport.trackCount} tracks`
+    heading.append(meta)
+    wrap.append(heading)
+  }
+  for (const track of transport.tracks || []) {
+    wrap.append(renderTrack(track))
+  }
+  return wrap
 }
 
 function renderTrack(track) {

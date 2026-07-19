@@ -172,11 +172,15 @@ print("\n== happy path ==")
 snap = snapshot.capture()
 ok &= check("no error", snap["error"] is None, repr(snap["error"]))
 ok &= check("project", snap["project"] == "SusanShow", repr(snap["project"]))
-ok &= check("transport", snap["transport"] == "default", repr(snap["transport"]))
-ok &= check("setlist", snap["setlist"] == "Main Setlist", repr(snap["setlist"]))
-ok &= check("2 tracks", snap["trackCount"] == 2)
+ok &= check("scope defaults to all", snap["scope"] == "all", repr(snap["scope"]))
+ok &= check("active transport reported", snap["activeTransport"] == "default",
+            repr(snap["activeTransport"]))
+tr0 = snap["transports"][0]
+ok &= check("transport", tr0["name"] == "default", repr(tr0["name"]))
+ok &= check("setlist", tr0["setlist"] == "Main Setlist", repr(tr0["setlist"]))
+ok &= check("2 tracks", tr0["trackCount"] == 2)
 
-t1 = snap["tracks"][0]
+t1 = tr0["tracks"][0]
 names = [l["name"] for l in t1["layers"]]
 ok &= check("flattens groups (6 layers)", len(t1["layers"]) == 6, str(names))
 ok &= check("layerCount matches", t1["layerCount"] == len(t1["layers"]))
@@ -185,7 +189,7 @@ ok &= check("nested group path",
             str([l["groupPath"] for l in t1["layers"]]))
 ok &= check("disabled layer kept, flagged",
             any(l["name"] == "Muted" and l["renderEnable"] is False for l in t1["layers"]))
-ok &= check("empty track ok", snap["tracks"][1]["layers"] == [])
+ok &= check("empty track ok", tr0["tracks"][1]["layers"] == [])
 
 v1 = [l for l in t1["layers"] if l["name"] == "Video 1"][0]
 ok &= check("both clips on swapping layer", len(v1["media"]) == 2, str(v1["media"]))
@@ -215,7 +219,8 @@ ok &= check("logs sit next to the plugin",
 ok &= check("file exists", path and os.path.isfile(path))
 if path and os.path.isfile(path):
     text = open(path).read()
-    ok &= check("valid json on disk", json.loads(text)["trackCount"] == 2)
+    ok &= check("valid json on disk",
+                json.loads(text)["transports"][0]["trackCount"] == 2)
     # Regression: the first live run wrote files that all claimed
     # "writtenTo": null, because the dict was serialised before the field was
     # set. The saved log must name itself.
@@ -224,11 +229,30 @@ if path and os.path.isfile(path):
     ok &= check("indented + sorted (diffable)",
                 "\n  " in text and text.index('"capturedAt"') < text.index('"project"'))
 
-print("\n== named transport ==")
+print("\n== scopes ==")
 snap2 = snapshot.capture("default")
-ok &= check("resolves by name", snap2["error"] is None and snap2["trackCount"] == 2)
+ok &= check("resolves by name",
+            snap2["error"] is None and snap2["transports"][0]["trackCount"] == 2)
+ok &= check("named scope recorded", snap2["scope"] == "default", repr(snap2["scope"]))
+snap2b = snapshot.capture(active_only=True)
+ok &= check("active_only scope", snap2b["scope"] == "active", repr(snap2b["scope"]))
+ok &= check("active_only captures one", snap2b["transportCount"] == 1)
 snap3 = snapshot.capture("nope")
 ok &= check("missing transport -> error, no crash", snap3["error"] == "no transport resolved", repr(snap3["error"]))
+
+# Default scope must capture *every* transport, not just the active one.
+tm_b = TM("second", [Track("Other", [Layer("L", 0.0, 5.0, {0.0: clip_b})])])
+snapshot.resourceManager = type("RM", (), {
+    "allResources": staticmethod(lambda t: [tm, tm_b])})()
+snap_all = snapshot.capture()
+ok &= check("all scope captures every transport", snap_all["transportCount"] == 2,
+            str([t["name"] for t in snap_all["transports"]]))
+ok &= check("active transport listed first",
+            snap_all["transports"][0]["name"] == "default",
+            str([t["name"] for t in snap_all["transports"]]))
+ok &= check("no duplicate of the active transport",
+            [t["name"] for t in snap_all["transports"]] == ["default", "second"],
+            str([t["name"] for t in snap_all["transports"]]))
 
 print("\n== list_transports ==")
 install(tm, tmpdir)
@@ -247,12 +271,17 @@ bare = TM("bare", [])
 bare.setList = None
 install(bare, tmpdir)
 snap4 = snapshot.capture()
-ok &= check("no setlist -> error", snap4["error"] == "transport has no setlist", repr(snap4["error"]))
+# The error is per-transport now: one transport without a setlist must not
+# abort a capture that spans several.
+ok &= check("no setlist -> per-transport error",
+            snap4["transports"][0]["error"] == "transport has no setlist",
+            repr(snap4["transports"][0]["error"]))
+ok &= check("capture itself still succeeds", snap4["error"] is None, repr(snap4["error"]))
 
 print("\n== bad layer degrades ==")
 install(TM("t", [Track("Broken", [BadLayer("Bad", 0.0, 1.0)])]), tmpdir)
 snap5 = snapshot.capture()
-bad = snap5["tracks"][0]["layers"][0]
+bad = snap5["transports"][0]["tracks"][0]["layers"][0]
 ok &= check("survives bad layer", snap5["error"] is None, repr(snap5["error"]))
 # An unreadable field degrades to null; the layer is still logged with whatever
 # else could be read. null is distinguishable from a real 0.0 in the JSON.
@@ -265,7 +294,7 @@ print("\n== unwritable log dir ==")
 # exercising the "director couldn't write" branch the UI surfaces.
 install(tm, "\0bad")
 snap6 = snapshot.capture()
-ok &= check("traversal still returns", snap6["trackCount"] == 2)
+ok &= check("traversal still returns", snap6["transports"][0]["trackCount"] == 2)
 ok &= check("writtenTo None, no crash", snap6["writtenTo"] is None, repr(snap6["writtenTo"]))
 ok &= check("failure recorded in debug", any("write failed" in d for d in snap6["debug"]), str(snap6["debug"]))
 

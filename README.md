@@ -23,8 +23,8 @@ Then open it from the Plugins menu in Designer.
 
 | Control | What it does |
 | --- | --- |
-| **Capture snapshot** | Snapshots the active transport's setlist. |
-| **Transport** dropdown | Pick which transport's setlist to snapshot; defaults to the active one. ↻ re-queries the list. |
+| **Capture snapshot** | Snapshots the setlists in scope. |
+| **Transport** dropdown | Scope of the capture: **all transports** (default), the active one only, or a named one. ↻ re-queries the list. |
 | **Download JSON** | Saves the last snapshot through the browser — useful if the director can't write to disk. |
 
 Snapshots land in `<project>/plugins/susan_summary/logs/` (next to the plugin), named

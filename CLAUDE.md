@@ -80,6 +80,21 @@ module types, `tStart`/`tEnd`, derived beats, media name/path/version/regionSet,
 Re-run `tools/probe.py` when a field comes back empty; it dumps every public
 member of a real track, layer, module, sequence, key and media resource.
 
+## Schema
+
+`schemaVersion` is **2**. A snapshot holds a `transports` array — `capture()`
+defaults to *every* transport, since a state log should cover the whole showfile
+unless deliberately narrowed. Version 1 had a single top-level
+`transport`/`setlist`/`tracks`; the four v1 logs in the test project are not
+comparable with v2 ones. Bump the version on any further shape change.
+
+Scopes: `capture()` = all, `capture(active_only=True)` = active,
+`capture("name")` = that one. `index.js` maps the dropdown to these, using
+`@active` as the sentinel for the active-only option.
+
+A transport that fails (e.g. no setlist) records its error in its own entry
+rather than aborting the capture — one bad transport must not cost the others.
+
 ## Design decisions worth keeping
 
 - **Every layer is logged**, including `renderEnable == false` ones (flagged, not

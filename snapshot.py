@@ -36,7 +36,9 @@ import time
 
 __all__ = ["capture", "list_transports"]
 
-SCHEMA_VERSION = 1
+# 2: snapshots hold a `transports` array (capture() defaults to every transport)
+#    instead of the single top-level transport/setlist/tracks of version 1.
+SCHEMA_VERSION = 2
 MODULE_DIR_NAME = "susan_summary"
 
 
@@ -452,42 +454,91 @@ def list_transports():
                           "error": str(error), "debug": debug}))
 
 
-def capture(transport_name=None):
-    """Snapshot the showfile and print it as JSON. Pass a transport name to read
-    a specific transport's setlist; omit it for the active transport."""
+def _transport_record(tm, debug):
+    """One transport: its setlist and every track on it."""
+    record = {
+        "name": _name_of(tm),
+        "setlist": None,
+        "trackCount": 0,
+        "tracks": [],
+        "error": None,
+    }
+    setlist = _attr(tm, "setList")
+    if setlist is None:
+        record["error"] = "transport has no setlist"
+        return record
+    record["setlist"] = _name_of(setlist)
+    record["tracks"] = [_track_record(t, debug)
+                        for t in (_attr(setlist, "tracks", []) or [])]
+    record["trackCount"] = len(record["tracks"])
+    return record
+
+
+def _all_transports(debug):
+    """Every TransportManager resource, active one first."""
+    found = []
+    rm = _g("resourceManager")
+    tm_type = _g("TransportManager")
+    if rm is not None and tm_type is not None and hasattr(rm, "allResources"):
+        try:
+            found = list(rm.allResources(tm_type))
+        except BaseException as error:
+            debug.append("allResources(TransportManager) failed: {0}".format(error))
+    else:
+        debug.append("resourceManager.allResources unavailable")
+
+    active = _resolve_transport(None, debug)
+    if active is not None:
+        active_name = _name_of(active)
+        # Put the active transport first, without duplicating it.
+        found = ([active] +
+                 [t for t in found if _name_of(t) != active_name])
+    return found
+
+
+def capture(transport_name=None, active_only=False):
+    """Snapshot the showfile and print it as JSON.
+
+    capture()                      -> every transport (the default)
+    capture(active_only=True)      -> the active transport only
+    capture("name")                -> that transport only
+    """
     debug = []
     snapshot = {
         "schemaVersion": SCHEMA_VERSION,
         "capturedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "project": None,
-        "transport": None,
-        "setlist": None,
-        "trackCount": 0,
-        "tracks": [],
+        "scope": None,
+        "activeTransport": None,
+        "transportCount": 0,
+        "transports": [],
         "writtenTo": None,
         "error": None,
         "debug": debug,
     }
     try:
         snapshot["project"] = _project_name(debug)
+        active = _resolve_transport(None, debug)
+        snapshot["activeTransport"] = _name_of(active)
 
-        tm = _resolve_transport(transport_name, debug)
-        if tm is None:
+        if transport_name:
+            snapshot["scope"] = transport_name
+            tm = _resolve_transport(transport_name, debug)
+            transports = [tm] if tm is not None else []
+        elif active_only:
+            snapshot["scope"] = "active"
+            transports = [active] if active is not None else []
+        else:
+            snapshot["scope"] = "all"
+            transports = _all_transports(debug)
+
+        if not transports:
             snapshot["error"] = "no transport resolved"
             print(json.dumps(snapshot))
             return snapshot
-        snapshot["transport"] = _name_of(tm)
 
-        setlist = _attr(tm, "setList")
-        if setlist is None:
-            snapshot["error"] = "transport has no setlist"
-            print(json.dumps(snapshot))
-            return snapshot
-        snapshot["setlist"] = _name_of(setlist)
-
-        tracks = _attr(setlist, "tracks", []) or []
-        snapshot["tracks"] = [_track_record(t, debug) for t in tracks]
-        snapshot["trackCount"] = len(snapshot["tracks"])
+        snapshot["transports"] = [_transport_record(tm, debug) for tm in transports]
+        snapshot["transportCount"] = len(snapshot["transports"])
 
         _write(snapshot, debug)  # sets snapshot["writtenTo"] itself
     except BaseException as error:
