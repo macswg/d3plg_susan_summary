@@ -10,6 +10,10 @@
 const MODULE_NAME = 'susan_summary'
 const API = '/api/session/python'
 
+// Bump on release. There's no build step to inject this, so it lives here as
+// the single source -- keep it in step with the git tag.
+const APP_VERSION = '1.0.0'
+
 let registered = false
 
 const $ = (id) => document.getElementById(id)
@@ -304,6 +308,24 @@ function renderLayer(layer, track) {
   return tr
 }
 
+/** `f` expands every track, or collapses them all if they're already open.
+ * Ignored while a control has focus, so it doesn't fight the transport
+ * dropdown's own type-to-select. */
+function toggleAllTracks(event) {
+  if (event.key !== 'f' || event.ctrlKey || event.metaKey || event.altKey) return
+  const target = event.target
+  if (target?.closest?.('input, select, textarea') || target?.isContentEditable) return
+
+  const tracks = [...document.querySelectorAll('#tracks details')]
+  if (!tracks.length) return
+  event.preventDefault()
+  const expand = tracks.some((d) => !d.open)
+  for (const details of tracks) details.open = expand
+}
+
+$('version').textContent = `v${APP_VERSION}`
+
+document.addEventListener('keydown', toggleAllTracks)
 els.capture.addEventListener('click', capture)
 els.refresh.addEventListener('click', loadTransports)
 

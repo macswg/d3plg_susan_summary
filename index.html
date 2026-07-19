@@ -26,6 +26,15 @@
     }
     h1 { font-size: 18px; margin: 0 0 4px; font-weight: 600; }
     .sub { color: var(--muted); margin: 0 0 20px; }
+    kbd {
+      font: 11px/1.6 ui-monospace, Consolas, monospace;
+      color: var(--text);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-bottom-width: 2px;
+      border-radius: 4px;
+      padding: 1px 5px;
+    }
     .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
     label { color: var(--muted); }
     button, input, select {
@@ -74,6 +83,14 @@
     .cues td { font-size: 12px; }
     .cues td.note { color: var(--accent); }
     .path { font-size: 12px; word-break: break-all; }
+    #footer {
+      margin-top: 28px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.7;
+    }
     .disabled-layer td:first-child::after {
       content: "render off";
       margin-left: 8px;
@@ -87,7 +104,10 @@
 </head>
 <body>
   <h1>Susan Summary</h1>
-  <p class="sub">Snapshot every track, layer, media and time in the showfile's setlists.</p>
+  <p class="sub">
+    Snapshot every track, layer, media and time in the showfile's setlists.
+    Press <kbd>f</kbd> to expand or collapse all tracks.
+  </p>
 
   <div class="controls">
     <button id="capture" class="primary">Capture Snapshot to logs</button>
@@ -101,6 +121,11 @@
   <div id="status"></div>
   <div class="summary" id="summary" hidden></div>
   <div id="tracks"></div>
+
+  <footer id="footer">
+    <div id="version"></div>
+    <div>Sean Green</div>
+  </footer>
 
   <script type="module" src="./index.js"></script>
 </body>
