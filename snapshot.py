@@ -127,9 +127,10 @@ def _captured_at():
 
 
 def _stamp_from(captured_at):
-    """Filename stamp for a capturedAt: same instant, minus the offset, with
-    colons swapped for dashes (illegal in Windows filenames). Derived from
-    capturedAt rather than a second clock read so the two can never disagree."""
+    """Filename stamp for a capturedAt: same instant, minus the offset, with the
+    ISO `T` separator as `_` and colons as dashes (illegal in Windows
+    filenames). Derived from capturedAt rather than a second clock read so the
+    two can never disagree."""
     stamp = str(captured_at or "")
     # Trim the trailing +HH:MM / -HH:MM, keeping the date's own leading part.
     for sep in ("+", "-"):
@@ -137,7 +138,9 @@ def _stamp_from(captured_at):
         if cut > 10:
             stamp = stamp[:cut]
             break
-    return stamp.replace(":", "-") or "snapshot"
+    if not stamp:
+        return "snapshot"
+    return stamp.replace("T", "_").replace(":", "-")
 
 
 def _num(value):

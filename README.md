@@ -37,7 +37,7 @@ Where a track carries timecode tags, times are shown and logged as timecode
 also records its cues — section breaks, notes and TC/CUE/MIDI tags.
 
 Snapshots land in `<project>/plugins/susan_summary/logs/` (next to the plugin), named
-`<timestamp>_<project>.json`. Keys are sorted and indented so consecutive
+`<date>_<time>_<project>.json`. Keys are sorted and indented so consecutive
 captures diff cleanly. `logs/` is gitignored here — commit it in the project
 repo where the showfile lives, not in this one.
 

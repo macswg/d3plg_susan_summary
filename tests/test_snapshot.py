@@ -323,9 +323,11 @@ ok &= check("capturedAt carries a UTC offset",
 ok &= check("capturedAt is local, not UTC",
             ca[:13] == _time.strftime("%Y-%m-%dT%H"), "%r vs local %r" % (ca, _time.strftime("%Y-%m-%dT%H")))
 ok &= check("filename stamp derives from capturedAt",
-            snapshot._stamp_from(ca) == ca[:19].replace(":", "-"), repr(snapshot._stamp_from(ca)))
-ok &= check("stamp strips a positive offset",
-            snapshot._stamp_from("2026-01-05T09:00:00+01:00") == "2026-01-05T09-00-00")
+            snapshot._stamp_from(ca) == ca[:19].replace("T", "_").replace(":", "-"),
+            repr(snapshot._stamp_from(ca)))
+ok &= check("stamp separates date and time with _",
+            snapshot._stamp_from("2026-01-05T09:00:00+01:00") == "2026-01-05_09-00-00",
+            repr(snapshot._stamp_from("2026-01-05T09:00:00+01:00")))
 ok &= check("stamp survives a missing capturedAt",
             snapshot._stamp_from(None) == "snapshot")
 
