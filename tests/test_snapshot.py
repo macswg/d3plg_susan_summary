@@ -313,6 +313,22 @@ ok &= check("no cue timecode before the tag", cues[0]["timecode"] is None,
 ok &= check("cue track time", cues[0]["t"] == 0.0, repr(cues[0]["t"]))
 ok &= check("no cue timecode without tags", t2["cues"] == [], str(t2["cues"]))
 
+print("\n== timestamps are local ==")
+import re as _re
+import time as _time
+ca = snap["capturedAt"]
+ok &= check("capturedAt carries a UTC offset",
+            bool(_re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$", ca)), repr(ca))
+# A UTC stamp filed an evening show under the next day; this must be local time.
+ok &= check("capturedAt is local, not UTC",
+            ca[:13] == _time.strftime("%Y-%m-%dT%H"), "%r vs local %r" % (ca, _time.strftime("%Y-%m-%dT%H")))
+ok &= check("filename stamp derives from capturedAt",
+            snapshot._stamp_from(ca) == ca[:19].replace(":", "-"), repr(snapshot._stamp_from(ca)))
+ok &= check("stamp strips a positive offset",
+            snapshot._stamp_from("2026-01-05T09:00:00+01:00") == "2026-01-05T09-00-00")
+ok &= check("stamp survives a missing capturedAt",
+            snapshot._stamp_from(None) == "snapshot")
+
 print("\n== file written ==")
 path = snap["writtenTo"]
 ok &= check("path under logs/", path and "logs" in path, repr(path))

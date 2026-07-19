@@ -104,6 +104,15 @@ Cues come from `track.cueBeats()` + `track.cueAtBeat(beat)`; the `Cue` carries
 `note` and `section`. Cues with no section, note or tag are dropped — a bare cue
 is timeline noise, not showfile state.
 
+## Timestamps are local
+
+`capturedAt` is local time with a UTC offset (`2026-07-18T19:43:51-07:00`), and
+the filename stamp is derived from it rather than a second clock read, so the
+two can never disagree. It was UTC, which filed an evening show under the next
+day's date — operators name sessions by the day they worked. The offset keeps it
+unambiguous when logs move between machines. Note this makes `capturedAt` sort
+lexicographically only within one timezone.
+
 ## Schema
 
 `schemaVersion` is **4**. Tracks are stored **once** in a top-level `tracks`

@@ -107,6 +107,39 @@ def _name_of(obj):
     return None
 
 
+def _captured_at():
+    """Local time with UTC offset, e.g. 2026-07-18T19:43:51-07:00.
+
+    Local because an operator files a log against the session they just
+    finished: a UTC stamp put an evening show under the next day's date. The
+    offset keeps it unambiguous when logs move between machines.
+    """
+    local = time.localtime()
+    if local.tm_isdst and time.daylight:
+        offset = -time.altzone
+    else:
+        offset = -time.timezone
+    sign = "+" if offset >= 0 else "-"
+    offset = abs(offset)
+    return "{0}{1}{2:02d}:{3:02d}".format(
+        time.strftime("%Y-%m-%dT%H:%M:%S", local), sign,
+        offset // 3600, (offset % 3600) // 60)
+
+
+def _stamp_from(captured_at):
+    """Filename stamp for a capturedAt: same instant, minus the offset, with
+    colons swapped for dashes (illegal in Windows filenames). Derived from
+    capturedAt rather than a second clock read so the two can never disagree."""
+    stamp = str(captured_at or "")
+    # Trim the trailing +HH:MM / -HH:MM, keeping the date's own leading part.
+    for sep in ("+", "-"):
+        cut = stamp.rfind(sep)
+        if cut > 10:
+            stamp = stamp[:cut]
+            break
+    return stamp.replace(":", "-") or "snapshot"
+
+
 def _num(value):
     """Coerce to float for JSON, or None. Never raises."""
     if value is None:
@@ -565,7 +598,7 @@ def _write(snapshot, debug):
             return None
         if not _os().path.isdir(directory):
             _os().makedirs(directory)
-        stamp = time.strftime("%Y-%m-%dT%H-%M-%S", time.gmtime())
+        stamp = _stamp_from(snapshot.get("capturedAt"))
         project = snapshot.get("project") or "project"
         safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in project)
         path = _os().path.join(directory, "{0}_{1}.json".format(stamp, safe))
@@ -716,7 +749,7 @@ def capture(transport_name=None, active_only=False):
     debug = []
     snapshot = {
         "schemaVersion": SCHEMA_VERSION,
-        "capturedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "capturedAt": _captured_at(),
         "project": None,
         "scope": None,
         "activeTransport": None,
