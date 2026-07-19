@@ -148,6 +148,33 @@ async function download() {
   const stamp = (lastSnapshot.capturedAt || '').replace(/:/g, '-') || 'snapshot'
   const name = `${stamp}_${lastSnapshot.project || 'project'}.json`
   const text = JSON.stringify(lastSnapshot, null, 2)
+
+  // Show a real Save As dialog where the API exists. A plain `download`
+  // attribute saves silently to the browser's download folder, which gives the
+  // operator no say in where the log lands.
+  if (window.showSaveFilePicker) {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: name,
+        types: [{ description: 'JSON snapshot', accept: { 'application/json': ['.json'] } }],
+      })
+      const writable = await handle.createWritable()
+      await writable.write(text)
+      await writable.close()
+      setStatus(`Saved to ${handle.name}`, 'ok')
+      return
+    } catch (error) {
+      // Cancelling the dialog is a decision, not a failure -- don't then go and
+      // download the file anyway.
+      if (error.name === 'AbortError') {
+        setStatus('Save cancelled', '')
+        return
+      }
+      // Anything else (API blocked in an embedded browser, permissions) falls
+      // through to the download below.
+    }
+  }
+
   const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }))
   const link = document.createElement('a')
   link.href = url

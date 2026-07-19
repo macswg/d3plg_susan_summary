@@ -25,7 +25,7 @@ Then open it from the Plugins menu in Designer.
 | --- | --- |
 | **Capture snapshot** | Snapshots the setlists in scope. |
 | **Transport** dropdown | Scope of the capture: **all transports** (default), the active one only, or a named one. ↻ re-queries the list. |
-| **Download JSON** | Saves the last snapshot through the browser — useful if the director can't write to disk. |
+| **Download JSON** | Opens a Save As dialog for the last snapshot. Falls back to a plain download, then the clipboard, in browsers without the File System Access API. |
 
 Snapshots land in `<project>/plugins/susan_summary/logs/` (next to the plugin), named
 `<timestamp>_<project>.json`. Keys are sorted and indented so consecutive
