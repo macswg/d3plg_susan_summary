@@ -152,8 +152,10 @@ const secs = (n) => (typeof n === 'number' ? `${n.toFixed(2)}s` : '—')
 
 function render(snapshot) {
   const transports = snapshot.transports || []
-  const allTracks = transports.flatMap((t) => t.tracks || [])
-  const layerCount = allTracks.reduce((n, t) => n + (t.layerCount || 0), 0)
+  // Tracks are stored once at the top level and referenced by id, so a track
+  // shared by two transports isn't duplicated in the log.
+  const byId = new Map((snapshot.tracks || []).map((t) => [t.id, t]))
+  const layerCount = (snapshot.tracks || []).reduce((n, t) => n + (t.layerCount || 0), 0)
 
   els.summary.hidden = false
   els.summary.innerHTML = ''
@@ -161,7 +163,7 @@ function render(snapshot) {
     ['Project', snapshot.project],
     ['Scope', snapshot.scope === 'all' ? 'all transports' : snapshot.scope],
     ['Transports', snapshot.transportCount],
-    ['Tracks', allTracks.length],
+    ['Tracks', snapshot.trackCount],
     ['Layers', layerCount],
     ['Captured', snapshot.capturedAt],
   ]
@@ -176,13 +178,13 @@ function render(snapshot) {
 
   els.tracks.innerHTML = ''
   for (const transport of transports) {
-    els.tracks.append(renderTransport(transport, transports.length > 1))
+    els.tracks.append(renderTransport(transport, transports.length > 1, byId))
   }
 }
 
 /** A transport heading with its tracks. With only one transport the heading
  * would be redundant chrome, so the tracks are shown directly. */
-function renderTransport(transport, showHeading) {
+function renderTransport(transport, showHeading, byId) {
   const wrap = document.createElement('div')
   if (showHeading) {
     const heading = document.createElement('h2')
@@ -195,8 +197,11 @@ function renderTransport(transport, showHeading) {
     heading.append(meta)
     wrap.append(heading)
   }
-  for (const track of transport.tracks || []) {
-    wrap.append(renderTrack(track))
+  // Resolve refs back to the shared track records; the app still shows each
+  // transport's tracks separately even though the log stores them once.
+  for (const id of transport.trackRefs || []) {
+    const track = byId.get(id)
+    if (track) wrap.append(renderTrack(track))
   }
   return wrap
 }

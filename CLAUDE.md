@@ -106,9 +106,16 @@ is timeline noise, not showfile state.
 
 ## Schema
 
-`schemaVersion` is **3** — tracks gained `cues` (section breaks, notes, tags),
-`hasTimecode`/`fps`, and layers gained `tcStart`/`tcEnd`. A snapshot holds a
-`transports` array — `capture()`
+`schemaVersion` is **4**. Tracks are stored **once** in a top-level `tracks`
+array, each with an `id`; transports carry `trackRefs` pointing into it. Setlists
+share tracks, so writing them inline duplicated the payload — one layer edit
+produced an identical diff hunk per transport, and the file was twice the size
+(37KB → 19KB on the test project). Identity is the track `uid`; the id is the
+readable name, disambiguated as `name #2` only when names genuinely collide.
+The app still renders tracks grouped per transport by resolving the refs.
+
+v3 added `cues` (section breaks, notes, tags), `hasTimecode`/`fps` and
+`tcStart`/`tcEnd`. A snapshot holds a `transports` array — `capture()`
 defaults to *every* transport, since a state log should cover the whole showfile
 unless deliberately narrowed. Version 1 had a single top-level
 `transport`/`setlist`/`tracks`; the four v1 logs in the test project are not

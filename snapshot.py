@@ -40,7 +40,10 @@ __all__ = ["capture", "list_transports"]
 #    instead of the single top-level transport/setlist/tracks of version 1.
 # 3: tracks carry `cues` (section breaks, notes, tags) and, where the track has
 #    timecode tags, `tcStart`/`tcEnd` on layers and `timecode` on cues.
-SCHEMA_VERSION = 3
+# 4: tracks are deduplicated into a top-level `tracks` array; transports carry
+#    `trackRefs` pointing into it. A track shared by two transports used to be
+#    written out twice, so one layer edit produced two identical diff hunks.
+SCHEMA_VERSION = 4
 MODULE_DIR_NAME = "susan_summary"
 
 
@@ -616,13 +619,53 @@ def list_transports():
                           "error": str(error), "debug": debug}))
 
 
-def _transport_record(tm, debug, settings=None):
-    """One transport: its setlist and every track on it."""
+class _TrackRegistry(object):
+    """Collects tracks across every transport, keeping one record per track.
+
+    Setlists share tracks, so writing each transport's tracks inline duplicated
+    them -- and a single layer edit then showed up as one identical diff hunk
+    per transport. Tracks are stored once here and referenced by id.
+
+    Identity is the track's `uid` where available (two tracks can share a name);
+    the id is the readable name, disambiguated only if names actually collide.
+    """
+
+    def __init__(self):
+        self.by_key = {}      # identity -> id
+        self.records = {}     # id -> track record
+
+    def add(self, track, settings, debug):
+        uid = _attr(track, "uid")
+        name = _name_of(track) or "Untitled track"
+        key = ("uid", uid) if uid is not None else ("name", name)
+
+        known = self.by_key.get(key)
+        if known is not None:
+            return known
+
+        track_id = name
+        suffix = 2
+        while track_id in self.records:   # same name, genuinely different track
+            track_id = "{0} #{1}".format(name, suffix)
+            suffix += 1
+
+        self.by_key[key] = track_id
+        record = _track_record(track, settings, debug)
+        record["id"] = track_id
+        self.records[track_id] = record
+        return track_id
+
+    def sorted_records(self):
+        return [self.records[k] for k in sorted(self.records)]
+
+
+def _transport_record(tm, registry, debug, settings=None):
+    """One transport: its setlist and references to the tracks on it."""
     record = {
         "name": _name_of(tm),
         "setlist": None,
         "trackCount": 0,
-        "tracks": [],
+        "trackRefs": [],
         "error": None,
     }
     setlist = _attr(tm, "setList")
@@ -634,9 +677,10 @@ def _transport_record(tm, debug, settings=None):
     # rather than per track.
     if settings is None:
         settings = _timecode_settings(tm, debug)
-    record["tracks"] = [_track_record(t, settings, debug)
-                        for t in (_attr(setlist, "tracks", []) or [])]
-    record["trackCount"] = len(record["tracks"])
+    # Order matters: trackRefs preserves the setlist's running order.
+    record["trackRefs"] = [registry.add(t, settings, debug)
+                           for t in (_attr(setlist, "tracks", []) or [])]
+    record["trackCount"] = len(record["trackRefs"])
     return record
 
 
@@ -678,6 +722,9 @@ def capture(transport_name=None, active_only=False):
         "activeTransport": None,
         "transportCount": 0,
         "transports": [],
+        # Every track once, referenced by transports[].trackRefs.
+        "trackCount": 0,
+        "tracks": [],
         "writtenTo": None,
         "error": None,
         "debug": debug,
@@ -703,8 +750,13 @@ def capture(transport_name=None, active_only=False):
             print(json.dumps(snapshot))
             return snapshot
 
-        snapshot["transports"] = [_transport_record(tm, debug) for tm in transports]
+        registry = _TrackRegistry()
+        snapshot["transports"] = [_transport_record(tm, registry, debug)
+                                  for tm in transports]
         snapshot["transportCount"] = len(snapshot["transports"])
+        # Sorted by id so the track list itself never reorders between captures.
+        snapshot["tracks"] = registry.sorted_records()
+        snapshot["trackCount"] = len(snapshot["tracks"])
 
         _write(snapshot, debug)  # sets snapshot["writtenTo"] itself
     except BaseException as error:

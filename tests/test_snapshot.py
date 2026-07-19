@@ -240,11 +240,14 @@ ok &= check("scope defaults to all", snap["scope"] == "all", repr(snap["scope"])
 ok &= check("active transport reported", snap["activeTransport"] == "default",
             repr(snap["activeTransport"]))
 tr0 = snap["transports"][0]
+# Tracks live once at the top level; transports reference them by id.
+tracks_by_id = {t["id"]: t for t in snap["tracks"]}
+tr0_tracks = [tracks_by_id[i] for i in tr0["trackRefs"]]
 ok &= check("transport", tr0["name"] == "default", repr(tr0["name"]))
 ok &= check("setlist", tr0["setlist"] == "Main Setlist", repr(tr0["setlist"]))
-ok &= check("2 tracks", tr0["trackCount"] == 2)
+ok &= check("2 track refs", tr0["trackCount"] == 2)
 
-t1 = tr0["tracks"][0]
+t1 = tr0_tracks[0]
 names = [l["name"] for l in t1["layers"]]
 ok &= check("flattens groups (6 layers)", len(t1["layers"]) == 6, str(names))
 ok &= check("layerCount matches", t1["layerCount"] == len(t1["layers"]))
@@ -253,7 +256,7 @@ ok &= check("nested group path",
             str([l["groupPath"] for l in t1["layers"]]))
 ok &= check("disabled layer kept, flagged",
             any(l["name"] == "Muted" and l["renderEnable"] is False for l in t1["layers"]))
-ok &= check("empty track ok", tr0["tracks"][1]["layers"] == [])
+ok &= check("empty track ok", tr0_tracks[1]["layers"] == [])
 
 v1 = [l for l in t1["layers"] if l["name"] == "Video 1"][0]
 ok &= check("both clips on swapping layer", len(v1["media"]) == 2, str(v1["media"]))
@@ -288,7 +291,7 @@ at_tag = [l for l in t1["layers"] if l["name"] == "Deep"][0]
 ok &= check("timecode at the tag beat", at_tag["tcStart"] == "01:00:00.00",
             repr(at_tag["tcStart"]))
 
-t2 = tr0["tracks"][1]
+t2 = tr0_tracks[1]
 ok &= check("track without tc tags flagged", t2["hasTimecode"] is False, str(t2["hasTimecode"]))
 ok &= check("no fps without timecode", t2["fps"] is None, repr(t2["fps"]))
 
@@ -354,6 +357,48 @@ ok &= check("no duplicate of the active transport",
             [t["name"] for t in snap_all["transports"]] == ["default", "second"],
             str([t["name"] for t in snap_all["transports"]]))
 
+print("\n== shared tracks are stored once ==")
+# Both transports run the same two tracks, plus one unique to the second.
+# Writing them inline duplicated the shared ones, so a single layer edit showed
+# up as two identical diff hunks.
+shared = Track("Shared", [Layer("L", 0.0, 5.0, {0.0: clip_a})])
+only_b = Track("Only B", [Layer("M", 0.0, 5.0, {0.0: clip_b})])
+tm_x = TM("x", [shared])
+tm_y = TM("y", [shared, only_b])
+install(tm_x, tmpdir)
+snapshot.resourceManager = type("RM", (), {
+    "allResources": staticmethod(lambda t: [tm_x, tm_y])})()
+snap_dedupe = snapshot.capture()
+
+ids = [t["id"] for t in snap_dedupe["tracks"]]
+ok &= check("each track stored once", ids == ["Only B", "Shared"], str(ids))
+ok &= check("trackCount counts unique tracks", snap_dedupe["trackCount"] == 2)
+refs = {t["name"]: t["trackRefs"] for t in snap_dedupe["transports"]}
+ok &= check("both transports reference the shared track",
+            refs["x"] == ["Shared"] and refs["y"] == ["Shared", "Only B"], str(refs))
+ok &= check("refs preserve setlist order", refs["y"] == ["Shared", "Only B"], str(refs))
+ok &= check("every ref resolves",
+            all(r in ids for t in snap_dedupe["transports"] for r in t["trackRefs"]))
+# The payload is what must not duplicate: the shared track's layer and its media
+# appear once, however many transports run it.
+blob = json.dumps(snap_dedupe)
+ok &= check("shared track's layer stored once", blob.count('"L"') == 1, str(blob.count('"L"')))
+ok &= check("shared track's media stored once",
+            blob.count('"Opener"') == 1, str(blob.count('"Opener"')))
+
+# Same name, genuinely different track (different uid) must not be merged.
+a = Track("Twin", [Layer("A", 0.0, 1.0)])
+b = Track("Twin", [Layer("B", 0.0, 1.0)])
+a.uid, b.uid = 101, 102
+tm_t = TM("t", [a, b])
+install(tm_t, tmpdir)
+snap_twins = snapshot.capture()
+twin_ids = [t["id"] for t in snap_twins["tracks"]]
+ok &= check("same-named tracks kept separate", twin_ids == ["Twin", "Twin #2"], str(twin_ids))
+ok &= check("both twins referenced",
+            snap_twins["transports"][0]["trackRefs"] == ["Twin", "Twin #2"],
+            str(snap_twins["transports"][0]["trackRefs"]))
+
 print("\n== list_transports ==")
 install(tm, tmpdir)
 import io as _io
@@ -381,7 +426,7 @@ ok &= check("capture itself still succeeds", snap4["error"] is None, repr(snap4[
 print("\n== bad layer degrades ==")
 install(TM("t", [Track("Broken", [BadLayer("Bad", 0.0, 1.0)])]), tmpdir)
 snap5 = snapshot.capture()
-bad = snap5["transports"][0]["tracks"][0]["layers"][0]
+bad = snap5["tracks"][0]["layers"][0]
 ok &= check("survives bad layer", snap5["error"] is None, repr(snap5["error"]))
 # An unreadable field degrades to null; the layer is still logged with whatever
 # else could be read. null is distinguishable from a real 0.0 in the JSON.
