@@ -27,7 +27,7 @@ Then open it from the Plugins menu in Designer.
 | **Transport** field | Snapshot a named transport instead of the active one. |
 | **Download JSON** | Saves the last snapshot through the browser — useful if the director can't write to disk. |
 
-Snapshots land in `<project>/plugins/susan_summary/logs/`, named
+Snapshots land in `<project>/plugins/susan_summary/logs/` (next to the plugin), named
 `<timestamp>_<project>.json`. Keys are sorted and indented so consecutive
 captures diff cleanly. `logs/` is gitignored here — commit it in the project
 repo where the showfile lives, not in this one.

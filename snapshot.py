@@ -343,17 +343,45 @@ def _project_name(debug):
     return None
 
 
+def _plugin_dir(debug):
+    """This plugin's own folder, {project}/plugins/susan_summary.
+
+    Resolved differently per context, because the director gives no project
+    folder attribute:
+      - Console import: __file__ is a real path to this file, so use its dir.
+      - Registered module: __file__ is the literal string "d3_loader" (not a
+        path at all), but the cwd is the project root -- so build the path from
+        there. Confirmed on a live director.
+    """
+    os = _os()
+    here = None
+    try:
+        if __file__ and os.path.isfile(__file__):
+            here = os.path.dirname(os.path.abspath(__file__))
+    except BaseException:
+        here = None
+    if here:
+        return here
+
+    # Not a real file path: treat the cwd as the project root.
+    root = _call(_project_paths(debug), "projectFolder")
+    if not root:
+        try:
+            root = os.getcwd()
+        except BaseException:
+            root = None
+    if root:
+        return os.path.join(str(root), "plugins", MODULE_DIR_NAME)
+
+    debug.append("plugin folder unresolved")
+    return None
+
+
 def _log_dir(debug):
-    """{project}/plugins/susan_summary/logs, falling back to this file's own
-    directory when the project folder can't be resolved (which is itself inside
-    the project's plugins folder, so the log still lands somewhere sensible)."""
-    paths = _project_paths(debug)
-    folder = _call(paths, "projectFolder") if paths is not None else None
-    if folder:
-        base = _os().path.join(str(folder), "plugins", MODULE_DIR_NAME)
-    else:
-        debug.append("project folder unresolved; logging beside snapshot.py")
-        base = _os().path.dirname(_os().path.abspath(__file__))
+    """{project}/plugins/susan_summary/logs -- the logs sit next to the plugin."""
+    base = _plugin_dir(debug)
+    if base is None:
+        return None
     return _os().path.join(base, "logs")
 
 
@@ -365,6 +393,9 @@ def _write(snapshot, debug):
     itself; setting it afterwards would leave every saved log claiming null."""
     try:
         directory = _log_dir(debug)
+        if directory is None:
+            snapshot["writtenTo"] = None
+            return None
         if not _os().path.isdir(directory):
             _os().makedirs(directory)
         stamp = time.strftime("%Y-%m-%dT%H-%M-%S", time.gmtime())

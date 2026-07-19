@@ -69,10 +69,11 @@ module types, `tStart`/`tEnd`, derived beats, media name/path/version/regionSet,
   **not** a lookup failure. Don't "fix" that into a warning again.
 - `track.timeToBeat(t)` takes one argument; `globalTimeToBeat` /
   `beatToGlobalTime` need more and raise "Incorrect number of arguments".
-- `state.projectName` works; there is no project *folder* attribute, so the log
-  dir falls back to `__file__`'s directory. That resolves differently per
-  context: project root when registered as a module, the plugins folder from the
-  console. `writtenTo` always records where it actually went.
+- `state.projectName` works; there is no project *folder* attribute. In the
+  registered-module context `__file__` is the literal string `"d3_loader"` (not
+  a path), but the cwd is the project root — so `_plugin_dir()` builds
+  `{cwd}/plugins/susan_summary` there, and uses `__file__`'s directory when it
+  is a real path (console import). `writtenTo` always records where it landed.
 - Layer `name` is set but transport/setlist `name` is not — `_name_of` falls
   back to `description`, which is why those resolve.
 

@@ -125,6 +125,11 @@ class ProjectPaths(object):
 
 
 def install(tm, project_dir):
+    # Simulate the registered-module context, which is the one that matters:
+    # there __file__ is the literal string "d3_loader" rather than a path, so
+    # the log dir is built from the project folder. Leaving the real __file__ in
+    # place would make these tests write into the repo instead.
+    snapshot.__file__ = "d3_loader"
     snapshot.GroupLayer = GroupLayer
     snapshot.guisystem = type("G", (), {"currentTransportManager": tm})()
     snapshot.state = type("S", (), {"projectPaths": ProjectPaths(project_dir)})()
@@ -204,6 +209,9 @@ ok &= check("beats derived from track", (v1["bStart"], v1["bEnd"]) == (0.0, 120.
 print("\n== file written ==")
 path = snap["writtenTo"]
 ok &= check("path under logs/", path and "logs" in path, repr(path))
+ok &= check("logs sit next to the plugin",
+            path and path.replace("/", os.sep).startswith(
+                os.path.join(tmpdir, "plugins", "susan_summary", "logs")), repr(path))
 ok &= check("file exists", path and os.path.isfile(path))
 if path and os.path.isfile(path):
     text = open(path).read()
