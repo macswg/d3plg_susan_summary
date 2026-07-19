@@ -148,6 +148,7 @@ async function download() {
   const stamp = (lastSnapshot.capturedAt || '').replace(/:/g, '-') || 'snapshot'
   const name = `${stamp}_${lastSnapshot.project || 'project'}.json`
   const text = JSON.stringify(lastSnapshot, null, 2)
+  let pickerFailure = null
 
   // Show a real Save As dialog where the API exists. A plain `download`
   // attribute saves silently to the browser's download folder, which gives the
@@ -170,9 +171,18 @@ async function download() {
         setStatus('Save cancelled', '')
         return
       }
-      // Anything else (API blocked in an embedded browser, permissions) falls
-      // through to the download below.
+      // Anything else (API blocked in an embedded browser, blocked in a
+      // cross-origin iframe, permissions) falls through to the download below --
+      // but say why, otherwise a silently-missing dialog is unexplainable.
+      pickerFailure = `${error.name}: ${error.message}`
     }
+  } else {
+    pickerFailure = 'showSaveFilePicker unavailable'
+  }
+  if (pickerFailure) {
+    console.warn('Save As dialog unavailable —', pickerFailure,
+      '| in iframe:', window.self !== window.top,
+      '| secure context:', window.isSecureContext)
   }
 
   const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }))
@@ -192,11 +202,12 @@ async function download() {
 
   // Designer's embedded browser may block downloads outright, so offer the
   // clipboard as a fallback the operator can actually use.
+  const why = pickerFailure ? ` (no Save As dialog — ${pickerFailure})` : ''
   try {
     await navigator.clipboard.writeText(text)
-    setStatus(`Downloading ${name} — also copied to clipboard`, 'ok')
+    setStatus(`Downloading ${name} — also copied to clipboard${why}`, 'ok')
   } catch {
-    setStatus(`Downloading ${name}`, 'ok')
+    setStatus(`Downloading ${name}${why}`, 'ok')
   }
 }
 
