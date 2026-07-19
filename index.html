@@ -44,6 +44,17 @@
     #status.ok { color: var(--ok); }
     #status.err { color: var(--err); }
     #status.busy { color: var(--muted); }
+    #raw textarea {
+      width: 100%;
+      height: 220px;
+      font: 12px/1.4 ui-monospace, Consolas, monospace;
+      color: var(--text);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      resize: vertical;
+    }
     .summary { display: flex; gap: 22px; flex-wrap: wrap; margin-bottom: 14px; }
     .summary div { color: var(--muted); }
     .summary b { color: var(--text); font-weight: 600; }

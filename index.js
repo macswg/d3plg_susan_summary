@@ -202,13 +202,46 @@ async function download() {
 
   // Designer's embedded browser may block downloads outright, so offer the
   // clipboard as a fallback the operator can actually use.
-  const why = pickerFailure ? ` (no Save As dialog — ${pickerFailure})` : ''
+  // Designer's plugin launcher embeds plugins in a sandboxed iframe without
+  // allow-downloads, so the click above may do nothing at all and the clipboard
+  // API is blocked too. Detect that and show the JSON for manual copying --
+  // the only export that survives in there.
+  const blocked = window.self !== window.top
   try {
     await navigator.clipboard.writeText(text)
-    setStatus(`Downloading ${name} — also copied to clipboard${why}`, 'ok')
+    setStatus(`Downloading ${name} — also copied to clipboard`, 'ok')
   } catch {
-    setStatus(`Downloading ${name}${why}`, 'ok')
+    if (blocked) {
+      showRawJson(text, name)
+      return
+    }
+    setStatus(`Downloading ${name}`, 'ok')
   }
+}
+
+/** Last-resort export for the plugin launcher, whose sandbox blocks downloads,
+ * the file picker and the clipboard alike: put the JSON on screen, selected,
+ * so Ctrl+C works. The director-side log file is unaffected by any of this. */
+function showRawJson(text, name) {
+  const existing = document.getElementById('raw')
+  if (existing) existing.remove()
+
+  const wrap = document.createElement('div')
+  wrap.id = 'raw'
+  const note = document.createElement('p')
+  note.className = 'sub'
+  note.textContent =
+    `This plugin window blocks downloads, so ${name} could not be saved from here. ` +
+    'The snapshot is already written on the director (see the path above). ' +
+    'Press Ctrl+C to copy the JSON below, or open this plugin directly in a browser to download it.'
+  const area = document.createElement('textarea')
+  area.readOnly = true
+  area.value = text
+  wrap.append(note, area)
+  els.status.after(wrap)
+  area.focus()
+  area.select()
+  setStatus(`Could not download ${name} — copy it below`, 'err')
 }
 
 // --- rendering --------------------------------------------------------------
