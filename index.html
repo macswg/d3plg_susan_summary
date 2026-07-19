@@ -26,7 +26,8 @@
     h1 { font-size: 18px; margin: 0 0 4px; font-weight: 600; }
     .sub { color: var(--muted); margin: 0 0 20px; }
     .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
-    button, input {
+    label { color: var(--muted); }
+    button, input, select {
       font: inherit;
       color: var(--text);
       background: var(--panel);
@@ -76,7 +77,11 @@
 
   <div class="controls">
     <button id="capture" class="primary">Capture snapshot</button>
-    <input id="transport" placeholder="Transport (blank = active)" size="26" />
+    <label for="transport">Transport</label>
+    <select id="transport">
+      <option value="">Active transport</option>
+    </select>
+    <button id="refresh" title="Re-query the available transports">↻</button>
     <button id="download" disabled>Download JSON</button>
   </div>
 

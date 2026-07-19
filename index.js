@@ -17,6 +17,7 @@ const $ = (id) => document.getElementById(id)
 const els = {
   capture: $('capture'),
   transport: $('transport'),
+  refresh: $('refresh'),
   download: $('download'),
   status: $('status'),
   summary: $('summary'),
@@ -56,6 +57,42 @@ async function register() {
   if (!res.ok) throw new Error('Could not read snapshot.py from the plugin folder')
   await post('/registermodule', { moduleName: MODULE_NAME, contents: await res.text() })
   registered = true
+}
+
+/** Populate the transport dropdown from the director. Keeps the current
+ * selection if it still exists, so a refresh doesn't reset the operator. */
+async function loadTransports() {
+  const previous = els.transport.value
+  try {
+    await register()
+    const data = await post('/execute', {
+      moduleName: MODULE_NAME,
+      script: 'list_transports()',
+    })
+    const raw = (data.pythonLog || data.returnValue || '').trim()
+    const result = JSON.parse(raw)
+    if (result.error) throw new Error(result.error)
+
+    els.transport.innerHTML = ''
+    const active = document.createElement('option')
+    active.value = ''
+    active.textContent = result.current
+      ? `Active transport (${result.current})`
+      : 'Active transport'
+    els.transport.append(active)
+
+    for (const name of result.transports || []) {
+      const option = document.createElement('option')
+      option.value = name
+      option.textContent = name === result.current ? `${name} — active` : name
+      els.transport.append(option)
+    }
+    if (previous && result.transports?.includes(previous)) {
+      els.transport.value = previous
+    }
+  } catch (error) {
+    setStatus(`Could not list transports: ${error.message}`, 'err')
+  }
 }
 
 async function capture() {
@@ -101,18 +138,34 @@ async function capture() {
   }
 }
 
-function download() {
+async function download() {
   if (!lastSnapshot) return
-  const stamp = (lastSnapshot.capturedAt || '').replace(/[:]/g, '-') || 'snapshot'
+  const stamp = (lastSnapshot.capturedAt || '').replace(/:/g, '-') || 'snapshot'
   const name = `${stamp}_${lastSnapshot.project || 'project'}.json`
-  const url = URL.createObjectURL(
-    new Blob([JSON.stringify(lastSnapshot, null, 2)], { type: 'application/json' }),
-  )
+  const text = JSON.stringify(lastSnapshot, null, 2)
+  const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }))
   const link = document.createElement('a')
   link.href = url
   link.download = name
+  // The anchor must be in the document for the click to count, and the blob URL
+  // must outlive the click -- revoking it synchronously cancels the download.
+  // (Both were wrong before, which is why this button did nothing.)
+  link.style.display = 'none'
+  document.body.append(link)
   link.click()
-  URL.revokeObjectURL(url)
+  setTimeout(() => {
+    link.remove()
+    URL.revokeObjectURL(url)
+  }, 10_000)
+
+  // Designer's embedded browser may block downloads outright, so offer the
+  // clipboard as a fallback the operator can actually use.
+  try {
+    await navigator.clipboard.writeText(text)
+    setStatus(`Downloading ${name} — also copied to clipboard`, 'ok')
+  } catch {
+    setStatus(`Downloading ${name}`, 'ok')
+  }
 }
 
 // --- rendering --------------------------------------------------------------
@@ -209,6 +262,7 @@ function renderLayer(layer) {
 
 els.capture.addEventListener('click', capture)
 els.download.addEventListener('click', download)
-els.transport.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') capture()
-})
+els.refresh.addEventListener('click', loadTransports)
+
+// Offer the real transport list up front rather than making the operator guess.
+loadTransports()

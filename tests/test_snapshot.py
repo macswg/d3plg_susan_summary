@@ -230,6 +230,18 @@ ok &= check("resolves by name", snap2["error"] is None and snap2["trackCount"] =
 snap3 = snapshot.capture("nope")
 ok &= check("missing transport -> error, no crash", snap3["error"] == "no transport resolved", repr(snap3["error"]))
 
+print("\n== list_transports ==")
+install(tm, tmpdir)
+import io as _io
+import contextlib as _contextlib
+_buf = _io.StringIO()
+with _contextlib.redirect_stdout(_buf):
+    snapshot.list_transports()
+tl = json.loads(_buf.getvalue())
+ok &= check("no error", tl["error"] is None, repr(tl["error"]))
+ok &= check("lists the transport", tl["transports"] == ["default"], str(tl["transports"]))
+ok &= check("reports the active one", tl["current"] == "default", repr(tl["current"]))
+
 print("\n== no setlist ==")
 bare = TM("bare", [])
 bare.setList = None

@@ -34,7 +34,7 @@ import time
 # The director embeds Python 2 (no pathlib, `long`, `os.getcwdu`), so this file
 # must stay 2/3 compatible.
 
-__all__ = ["capture"]
+__all__ = ["capture", "list_transports"]
 
 SCHEMA_VERSION = 1
 MODULE_DIR_NAME = "susan_summary"
@@ -415,6 +415,41 @@ def _write(snapshot, debug):
         debug.append("write failed: {0}".format(error))
         snapshot["writtenTo"] = None
         return None
+
+
+def list_transports():
+    """Print the available transports so the UI can offer a dropdown instead of
+    a free-text field.
+
+    Output: {"transports": [...], "current": "default", "error": null}
+    Names come from _name_of, i.e. the same lookup capture() matches against --
+    transports have no `name`, so this resolves via `description`.
+    """
+    debug = []
+    names = []
+    current = None
+    try:
+        current = _name_of(_resolve_transport(None, debug))
+
+        rm = _g("resourceManager")
+        tm_type = _g("TransportManager")
+        if rm is not None and tm_type is not None and hasattr(rm, "allResources"):
+            for tm in rm.allResources(tm_type):
+                name = _name_of(tm)
+                if name and name not in names:
+                    names.append(name)
+        else:
+            debug.append("resourceManager.allResources unavailable")
+
+        # Always offer the active transport, even if enumeration missed it.
+        if current and current not in names:
+            names.insert(0, current)
+
+        print(json.dumps({"transports": names, "current": current,
+                          "error": None, "debug": debug}))
+    except BaseException as error:
+        print(json.dumps({"transports": names, "current": current,
+                          "error": str(error), "debug": debug}))
 
 
 def capture(transport_name=None):
