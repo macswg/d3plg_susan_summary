@@ -181,17 +181,21 @@ def _timecode_settings(tm, debug):
     return {"fps": fps, "clockType": clock_type}
 
 
-def _has_timecode(track, cue_beats):
-    """True when the track carries a timecode tag. Without one,
+def _first_tc_beat(track, cue_beats):
+    """Beat of the earliest timecode tag on the track, or None if it has none.
+
+    Doubles as the "does this track have timecode" test: without a tag,
     beatToGlobalTime just echoes the track time back and there is no real
     timecode to show -- verified on a track with no tags."""
+    first = None
     for beat in cue_beats:
         try:
             if track.tagAtBeat(beat, TAG_TC) is not None:
-                return True
+                if first is None or beat < first:
+                    first = beat
         except BaseException:
             continue
-    return False
+    return first
 
 
 def _format_timecode(seconds, fps):
@@ -217,6 +221,12 @@ def _timecode_at(track, beat, tc, debug):
     timecode tags. Per-track on purpose: TransportManager.beatToTimecode() is
     transport-level and reports the active track's timecode for every track."""
     if not tc or beat is None or not tc.get("hasTags"):
+        return None
+    # Before the first timecode tag there is no timecode yet -- Designer reports
+    # 00:00:00.00 there, which reads as a real position rather than "none". Fall
+    # back to the track time instead by returning None; callers show seconds.
+    first = tc.get("firstTagBeat")
+    if first is not None and beat < first:
         return None
     try:
         # tcTagsLimitedToSection=False: use the nearest preceding tag wherever
@@ -434,7 +444,9 @@ def _track_record(track, settings, debug):
     tc = None
     if settings:
         tc = dict(settings)
-        tc["hasTags"] = _has_timecode(track, cue_beats)
+        first = _first_tc_beat(track, cue_beats)
+        tc["firstTagBeat"] = first
+        tc["hasTags"] = first is not None
 
     layers = []
     for layer in _attr(track, "layers", []) or []:
@@ -447,6 +459,8 @@ def _track_record(track, settings, debug):
         "bpm": _num(_attr(track, "bpm")),
         "hasTimecode": bool(tc and tc.get("hasTags")),
         "fps": tc["fps"] if tc and tc.get("hasTags") else None,
+        # Positions before this beat have no timecode and fall back to seconds.
+        "firstTimecodeBeat": _num(tc["firstTagBeat"]) if tc and tc.get("hasTags") else None,
         "cues": _cue_records(track, tc, debug),
         "layerCount": len(layers),
         "layers": layers,

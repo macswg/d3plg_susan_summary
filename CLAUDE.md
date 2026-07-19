@@ -91,7 +91,11 @@ to read the frame rate (`.fps()`), since the clock type isn't exposed directly.
 A track has timecode **iff it carries a TC tag** (`tagAtBeat(beat, 0)`). Without
 one, `beatToGlobalTime` echoes the track time straight back — so `hasTimecode`
 gates every `tcStart`/`tcEnd`/`cues[].timecode`, and they are null otherwise.
-Never show a timecode a track doesn't have.
+
+Positions **before the first TC tag** also get null, and fall back to track time
+in the UI. Designer reports `00:00:00.00` there, which reads as a real position
+rather than "no timecode yet". `firstTimecodeBeat` on the track records where it
+starts. Never show a timecode that doesn't exist.
 
 Tag types: `0` = TC, `1` = CUE, `2` = MIDI. Frame rates map to clock types
 `{23.976: 0, 24: 1, 25: 2, 29.97: 3, 29.97DF: 4, 30: 5}`.

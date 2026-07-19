@@ -277,9 +277,16 @@ ok &= check("beats derived from track", (v1["bStart"], v1["bEnd"]) == (0.0, 120.
 print("\n== timecode ==")
 ok &= check("track with tc tags flagged", t1["hasTimecode"] is True, str(t1["hasTimecode"]))
 ok &= check("fps reported", t1["fps"] == 30.0, repr(t1["fps"]))
-# The tag sits at beat 10 = 1 hour; Video 1 starts at beat 0, i.e. 5s earlier.
-ok &= check("layer timecode derived", v1["tcStart"] == "00:59:55.00", repr(v1["tcStart"]))
-ok &= check("layer timecode out", v1["tcEnd"] == "01:00:55.00", repr(v1["tcEnd"]))
+# The tag sits at beat 10. Video 1 starts at beat 0 -- before the tag, so it has
+# no timecode and must fall back to track time rather than claim 00:00:00.00.
+ok &= check("first timecode beat reported", t1["firstTimecodeBeat"] == 10.0,
+            repr(t1["firstTimecodeBeat"]))
+ok &= check("no timecode before the tag", v1["tcStart"] is None, repr(v1["tcStart"]))
+ok &= check("timecode after the tag", v1["tcEnd"] == "01:00:55.00", repr(v1["tcEnd"]))
+# A layer starting exactly at the tag does get one.
+at_tag = [l for l in t1["layers"] if l["name"] == "Deep"][0]
+ok &= check("timecode at the tag beat", at_tag["tcStart"] == "01:00:00.00",
+            repr(at_tag["tcStart"]))
 
 t2 = tr0["tracks"][1]
 ok &= check("track without tc tags flagged", t2["hasTimecode"] is False, str(t2["hasTimecode"]))
@@ -298,6 +305,8 @@ ok &= check("tags captured", cues[2]["tags"] == [{"type": "cue", "text": "2.34"}
 ok &= check("tc tag captured", cues[1]["tags"] == [{"type": "tc", "text": "1:00:00:0"}],
             str(cues[1]["tags"]))
 ok &= check("cue timecode", cues[1]["timecode"] == "01:00:00.00", repr(cues[1]["timecode"]))
+ok &= check("no cue timecode before the tag", cues[0]["timecode"] is None,
+            repr(cues[0]["timecode"]))
 ok &= check("cue track time", cues[0]["t"] == 0.0, repr(cues[0]["t"]))
 ok &= check("no cue timecode without tags", t2["cues"] == [], str(t2["cues"]))
 
