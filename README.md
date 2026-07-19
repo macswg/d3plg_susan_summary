@@ -64,6 +64,17 @@ objects (no Designer, no dependencies — just `python tests/test_snapshot.py`),
 covering nested groups, clip swaps, disabled layers, empty tracks, a missing
 setlist and an unwritable log dir.
 
+`tools/ui_test.js` drives the real plugin page in Chrome — clicks Capture,
+reports what rendered, screenshots it, and fails on any page error. It needs
+Designer running and `npm i puppeteer-core` (which drives your installed Chrome
+rather than downloading one):
+
+```
+node tools/ui_test.js            # all transports
+node tools/ui_test.js @active
+node tools/ui_test.js <name>
+```
+
 Every snapshot carries a `debug` array recording which access paths worked and
 which failed — check it first when a field comes back empty.
 
