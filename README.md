@@ -11,7 +11,10 @@ swapped clip, a retimed cue.
 
 ## Install
 
-No build step. Copy this folder to either:
+No build step, no dependencies. Download `susan_summary.zip` from the
+[latest release](https://github.com/macswg/d3plg_susan_summary/releases/latest)
+and unzip it — or just clone this repo — then put the `susan_summary/` folder in
+either:
 
 - `<d3 Projects>/common/plugins/susan_summary/` — available to every project on
   the machine, or
