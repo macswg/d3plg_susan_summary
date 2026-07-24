@@ -115,16 +115,72 @@ lexicographically only within one timezone.
 
 ## Schema
 
-`schemaVersion` is **4**. Tracks are stored **once** in a top-level `tracks`
+`schemaVersion` is **5**. Tracks are stored **once** in a top-level `tracks`
 array, each with an `id`; transports carry `trackRefs` pointing into it. Setlists
 share tracks, so writing them inline duplicated the payload — one layer edit
 produced an identical diff hunk per transport, and the file was twice the size
-(37KB → 19KB on the test project). Identity is the track `uid`; the id is the
-readable name, disambiguated as `name #2` only when names genuinely collide.
-The app still renders tracks grouped per transport by resolving the refs.
+(37KB → 19KB on the test project). The app still renders tracks grouped per
+transport by resolving the refs.
 
-v3 added `cues` (section breaks, notes, tags), `hasTimecode`/`fps` and
-`tcStart`/`tcEnd`. A snapshot holds a `transports` array — `capture()`
+### Track identity is the resource path (v5)
+
+Identity is `track.path` (`objects/track/140_one_one.apx`) — the file identity,
+which cannot collide. `uid` then the name are ordered fallbacks when the path
+can't be read; a capture must never fail over this. Each track record carries
+`path` (so the id is auditable) and `trashed` (path under `trash/`).
+
+The **id is a pure function of the track**: `_track_id(name, path)` looks at
+nothing already in the registry. Plain name for `objects/track/<name>.apx`,
+`<name> #trash` for a trashed resource, `<name> #<file stem>` when the file name
+says something the display name doesn't. Until v5 the id was the display name
+plus a ` #<n>` counter minted in *encounter order*, so changing which setlist a
+transport had loaded could move the suffix to the other resource — and the
+viewer, which matches by `id`, then reported a whole 37-layer track removed and
+another added for a showfile where nothing had changed.
+
+Two same-named tracks are usually not a bug: the live session that prompted this
+had `objects/track/140_one_one.apx` and `trash/objects/track/140_one_one.apx` —
+genuinely different resources, one trashed and still referenced by a setlist.
+The uid keying was working; the id scheme was what was broken.
+
+**Diffing a v5 capture against a v4 one on disk**: ids move for tracks whose
+file stem differs from the display name and for anything under `trash/`, so
+those read as one removed + one added. One-time cost at the version boundary.
+
+### `showfile` census (v5)
+
+`tracks` is only the union of what the *loaded* setlists reference, so a track
+dropped from a setlist vanishes and a diff can't tell "deleted from the
+showfile" from "dropped from a setlist". `showfile` loads
+`objects/setlist/automatic.apx` through `resourceManager.load()` — which works
+regardless of what any transport has active — and records membership:
+
+```json
+"showfile": {"source": "objects/setlist/automatic.apx",
+             "trackIds": [...], "trackCount": 126, "error": null}
+```
+
+**Ids only, never bodies.** Bodies would add ~750KB per capture and force a
+`track.layers` traversal of all 126 tracks, which is the documented
+Designer-crash exposure. Ids resolve the same way a `trackRef` does
+(`registry.id_for`, which mints the id without capturing the body), so the
+viewer can match them against `tracks[].id`. The census never adds a track to
+`tracks` — bodies still come from the loaded setlists. On failure `trackIds` is
+**`null`, never `[]`**: the viewer must tell "no census" from "empty showfile".
+`error` carries the message, `debug` gets a line, and the capture proceeds.
+
+**Don't read the display name you don't need.** `id_for` keys on `_track_path`
+alone and returns a registry hit before touching the name; `_key_of` is the one
+place the path → uid → name fallback chain lives (so `add` and `id_for` cannot
+key a track differently), and `_mint_id` is the only thing that reads the name.
+On a live session (2026-07-24) sweeping `.path` across every setlist took ~25ms,
+while one call reading `.description` for all 126 automatic-setlist tracks
+preceded a Designer freeze. Correlation, not proof — but this runs on a timer in
+a session that may be in a show, so the cheap path stays cheap. There is a test
+that fails if a registry hit reads `.description` again.
+
+v4 deduplicated the tracks. v3 added `cues` (section breaks, notes, tags),
+`hasTimecode`/`fps` and `tcStart`/`tcEnd`. A snapshot holds a `transports` array — `capture()`
 defaults to *every* transport, since a state log should cover the whole showfile
 unless deliberately narrowed. Version 1 had a single top-level
 `transport`/`setlist`/`tracks`; the four v1 logs in the test project are not

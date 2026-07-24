@@ -43,8 +43,17 @@ __all__ = ["capture", "list_transports"]
 # 4: tracks are deduplicated into a top-level `tracks` array; transports carry
 #    `trackRefs` pointing into it. A track shared by two transports used to be
 #    written out twice, so one layer edit produced two identical diff hunks.
-SCHEMA_VERSION = 4
+# 5: track ids are derived from the resource `path` instead of being minted in
+#    encounter order, tracks carry `path`/`trashed`, and a top-level `showfile`
+#    records the automatic setlist's membership so a diff can tell "deleted from
+#    the showfile" from "dropped from a setlist".
+SCHEMA_VERSION = 5
 MODULE_DIR_NAME = "susan_summary"
+
+# The showfile-wide setlist. resourceManager.load()s regardless of what any
+# transport has active, which is what makes it a census rather than an accident
+# of which setlist happened to be loaded (confirmed on a live director).
+AUTOMATIC_SETLIST_PATH = "objects/setlist/automatic.apx"
 
 
 def _g(name):
@@ -473,6 +482,94 @@ def _layer_records(layer, group_path, track, tc, debug):
                  "error": str(error)[:200]}]
 
 
+# Where a live track resource sits. Anything else -- notably trash/objects/track
+# -- is a track the showfile still references from somewhere unusual, and that is
+# worth saying out loud in the id.
+TRACK_ROOT = "objects/track"
+
+
+def _track_path(track):
+    """The track's resource path, e.g. objects/track/140_one_one.apx, with
+    separators normalised to `/`. None when it can't be read.
+
+    Unlike media paths the `.apx` is deliberately kept: this is the file identity
+    the id is derived from, not a display string."""
+    path = _attr(track, "path")
+    if path is None:
+        return None
+    try:
+        path = str(path).replace("\\", "/").strip()
+    except BaseException:
+        return None
+    return path or None
+
+
+def _is_trashed(path):
+    """True when the resource sits under a trash/ folder. A setlist playing a
+    track out of the trash is showfile state worth surfacing -- the live session
+    that prompted this had exactly one."""
+    if not path:
+        return False
+    return "trash" in path.split("/")
+
+
+def _slug(text):
+    """Lowercased, non-alphanumerics folded to `_`, so `140 One One` and
+    `140_one_one` compare equal. Used only to decide whether a track's file name
+    already says what its display name says."""
+    try:
+        return "".join(c.lower() if c.isalnum() else "_" for c in str(text))
+    except BaseException:
+        return ""
+
+
+def _track_id(name, path):
+    """The id for a track, as a **pure function of that track alone**.
+
+    Until v5 the id was the display name, disambiguated with a ` #<n>` counter
+    minted in encounter order (`while track_id in self.records`). That made the
+    id depend on the order the registry happened to walk the setlists: change
+    which setlist a transport has loaded and the ` #2` could move to the other
+    resource, at which point a diff reported one whole track removed and another
+    added for a showfile where nothing had changed. Order-dependence in an
+    identifier is a correctness bug in a diff tool, so nothing here may look at
+    what has already been registered.
+
+    The path is the disambiguator, because it is the file identity and cannot
+    collide:
+      - `objects/track/<name>.apx`        -> the name, unadorned
+      - `trash/objects/track/<name>.apx`  -> `<name> #trash`
+      - two files in one folder sharing a display name -> each gets its own file
+        stem, `<name> #<stem>`, which differ by construction
+    """
+    if not path:
+        return name
+
+    parts = path.split("/")
+    stem = parts[-1]
+    if stem.endswith(".apx"):
+        stem = stem[:-4]
+    folder = "/".join(parts[:-1])
+
+    bits = []
+    if folder != TRACK_ROOT:
+        # Keep the part that isn't the ordinary track root -- `trash` for a
+        # trashed resource, the whole folder for anything unexpected.
+        prefix = folder
+        if prefix.endswith(TRACK_ROOT):
+            prefix = prefix[:-len(TRACK_ROOT)].strip("/")
+        if prefix:
+            bits.append(prefix)
+    if _slug(stem) != _slug(name):
+        # The file name says something the display name doesn't; two same-named
+        # tracks in one folder can only be told apart this way.
+        bits.append(stem)
+
+    if not bits:
+        return name
+    return "{0} #{1}".format(name, "/".join(bits))
+
+
 def _track_record(track, settings, debug):
     # Resolve this track's timecode once; every layer and cue on it reuses it.
     cue_beats = []
@@ -491,8 +588,12 @@ def _track_record(track, settings, debug):
     for layer in _attr(track, "layers", []) or []:
         layers.extend(_layer_records(layer, [], track, tc, debug))
 
+    path = _track_path(track)
     return {
         "name": _name_of(track),
+        # The resource path the id is derived from, so the id is auditable.
+        "path": path,
+        "trashed": _is_trashed(path),
         "lengthInSec": _num(_attr(track, "lengthInSec")),
         "lengthInBeats": _num(_attr(track, "lengthInBeats")),
         "bpm": _num(_attr(track, "bpm")),
@@ -662,29 +763,63 @@ class _TrackRegistry(object):
     them -- and a single layer edit then showed up as one identical diff hunk
     per transport. Tracks are stored once here and referenced by id.
 
-    Identity is the track's `uid` where available (two tracks can share a name);
-    the id is the readable name, disambiguated only if names actually collide.
+    Identity is the resource `path` -- the file identity, which cannot collide.
+    `uid` and then the name are ordered fallbacks for a track whose path can't be
+    read; a capture must never fail over this. The id comes from _track_id(),
+    which is a pure function of the track, so the same track gets the same id
+    whichever setlists happen to be loaded and in whatever order they are walked.
     """
 
     def __init__(self):
         self.by_key = {}      # identity -> id
         self.records = {}     # id -> track record
 
-    def add(self, track, settings, debug):
+    def _key_of(self, track):
+        """(identity key, path) for a track -- the one place the fallback chain
+        lives, so add() and id_for() can never key the same track differently.
+
+        Reads only the path, which is the primary key and cheap. The name is
+        *not* read here: it is needed only to mint a new id, and the census asks
+        for ids far more often than it introduces new tracks."""
+        path = _track_path(track)
+        if path:
+            return ("path", path), path
         uid = _attr(track, "uid")
-        name = _name_of(track) or "Untitled track"
-        key = ("uid", uid) if uid is not None else ("name", name)
+        if uid is not None:
+            return ("uid", uid), None
+        return ("name", _name_of(track) or "Untitled track"), None
+
+    def _mint_id(self, track, path):
+        """The id for a track not yet registered. Reads the display name -- the
+        only place that read happens."""
+        return _track_id(_name_of(track) or "Untitled track", path)
+
+    def id_for(self, track):
+        """The id this track has (or would have), *without* capturing its body.
+
+        The showfile census needs ids for all 126 tracks but not their layers:
+        bodies would add ~750KB per capture and force a track.layers traversal of
+        every track, which is the documented Designer-crash exposure.
+
+        A registry hit returns without reading the display name at all. Reading
+        `.description` for all 126 tracks of the automatic setlist correlated
+        with a live Designer freeze (2026-07-24) where the same sweep over
+        `.path` was ~25ms, and this runs on a timer in a session that may be in
+        a show -- so the cheap path stays cheap."""
+        key, path = self._key_of(track)
+        known = self.by_key.get(key)
+        if known is not None:
+            return known
+        return self._mint_id(track, path)
+
+    def add(self, track, settings, debug):
+        key, path = self._key_of(track)
 
         known = self.by_key.get(key)
         if known is not None:
             return known
 
-        track_id = name
-        suffix = 2
-        while track_id in self.records:   # same name, genuinely different track
-            track_id = "{0} #{1}".format(name, suffix)
-            suffix += 1
-
+        track_id = self._mint_id(track, path)
         self.by_key[key] = track_id
         record = _track_record(track, settings, debug)
         record["id"] = track_id
@@ -693,6 +828,42 @@ class _TrackRegistry(object):
 
     def sorted_records(self):
         return [self.records[k] for k in sorted(self.records)]
+
+
+def _showfile_census(registry, debug):
+    """Which tracks the showfile holds, independent of what is loaded.
+
+    `tracks` is only the union of what the loaded setlists reference, so a track
+    dropped from a setlist vanishes from the capture and a diff cannot tell
+    "deleted from the showfile" from "dropped from a setlist". The automatic
+    setlist is the showfile's own census and loads regardless of what any
+    transport has active.
+
+    Ids only, never bodies -- membership is the whole question, and the bodies
+    still come from the loaded setlists. On failure `trackIds` stays **None**,
+    never []: the viewer has to tell "no census available" from "the showfile is
+    empty".
+    """
+    record = {
+        "source": AUTOMATIC_SETLIST_PATH,
+        "trackIds": None,
+        "trackCount": None,
+        "error": None,
+    }
+    try:
+        rm = _g("resourceManager")
+        if rm is None or not hasattr(rm, "load"):
+            raise RuntimeError("resourceManager.load unavailable")
+        setlist = rm.load(AUTOMATIC_SETLIST_PATH)
+        if setlist is None:
+            raise RuntimeError("nothing at {0}".format(AUTOMATIC_SETLIST_PATH))
+        ids = [registry.id_for(t) for t in (_attr(setlist, "tracks", []) or [])]
+        record["trackIds"] = ids
+        record["trackCount"] = len(ids)
+    except BaseException as error:
+        record["error"] = str(error)
+        debug.append("showfile census failed: {0}".format(error))
+    return record
 
 
 def _transport_record(tm, registry, debug, settings=None):
@@ -761,6 +932,9 @@ def capture(transport_name=None, active_only=False):
         # Every track once, referenced by transports[].trackRefs.
         "trackCount": 0,
         "tracks": [],
+        # Membership of the whole showfile, ids only -- see _showfile_census.
+        "showfile": {"source": AUTOMATIC_SETLIST_PATH, "trackIds": None,
+                     "trackCount": None, "error": None},
         "writtenTo": None,
         "error": None,
         "debug": debug,
@@ -793,6 +967,8 @@ def capture(transport_name=None, active_only=False):
         # Sorted by id so the track list itself never reorders between captures.
         snapshot["tracks"] = registry.sorted_records()
         snapshot["trackCount"] = len(snapshot["tracks"])
+        # Census last: it only names ids, it never adds tracks to `tracks`.
+        snapshot["showfile"] = _showfile_census(registry, debug)
 
         _write(snapshot, debug)  # sets snapshot["writtenTo"] itself
     except BaseException as error:

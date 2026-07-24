@@ -108,9 +108,17 @@ class Track(object):
     """`cues` maps beat -> Cue. `tc_at` is the beat of the timecode tag, if any;
     a track without one has no timecode at all (as on the real director, where
     beatToGlobalTime just echoes the track time back)."""
-    def __init__(self, description, layers, length=120.0, cues=None, tc_at=None):
-        self.description = description
+    def __init__(self, description, layers, length=120.0, cues=None, tc_at=None,
+                 path=None):
+        # Counted rather than stored plainly: reading the display name off every
+        # track is the access pattern that correlated with a live Designer
+        # freeze, so the registry's cheap path must never touch it.
+        self._description = description
+        self.description_reads = 0
         self.layers = layers
+        # Real tracks are resources on disk; the path is what the id is keyed on.
+        self.path = ("objects/track/{0}.apx".format(description)
+                     if path is None else path)
         self.lengthInSec = length
         self.lengthInBeats = length * 2
         self.bpm = 120.0
@@ -121,6 +129,11 @@ class Track(object):
             self._tc_at = tc_at
         else:
             self._tc_at = None
+
+    @property
+    def description(self):
+        self.description_reads += 1
+        return self._description
 
     def timeToBeat(self, t):
         """Beats aren't readable off layers; they come from the track."""
@@ -159,10 +172,49 @@ class Timecode(object):
         return 30.0
 
 
+class PathlessTrack(Track):
+    """A track whose `path` can't be read. Identity must fall back to the uid
+    without the capture failing."""
+    @property
+    def path(self):
+        raise BaseException("director exploded")
+
+    @path.setter
+    def path(self, v):
+        pass
+
+
+class SetList(object):
+    def __init__(self, name, tracks):
+        self.name = name
+        self.tracks = list(tracks)
+
+
+class RM(object):
+    """resourceManager: enumerates transports and loads resources by path.
+
+    `load` is how the showfile census reaches the automatic setlist regardless of
+    what any transport has active."""
+    def __init__(self, transports, automatic=None, load_error=None):
+        self._transports = list(transports)
+        self._automatic = automatic
+        self._load_error = load_error
+
+    def allResources(self, resource_type):
+        return list(self._transports)
+
+    def load(self, path):
+        if self._load_error:
+            raise BaseException(self._load_error)
+        if path != snapshot.AUTOMATIC_SETLIST_PATH or self._automatic is None:
+            return None
+        return self._automatic
+
+
 class TM(object):
     def __init__(self, name, tracks):
         self.name = name
-        self.setList = type("SL", (), {"name": "Main Setlist", "tracks": tracks})()
+        self.setList = SetList("Main Setlist", tracks)
 
     def beatToTimecode(self, beat):
         """Only used to read the frame rate off; the per-track conversion is
@@ -183,7 +235,7 @@ class ProjectPaths(object):
         return "SusanShow"
 
 
-def install(tm, project_dir):
+def install(tm, project_dir, automatic=None, load_error=None):
     # Simulate the registered-module context, which is the one that matters:
     # there __file__ is the literal string "d3_loader" rather than a path, so
     # the log dir is built from the project folder. Leaving the real __file__ in
@@ -192,8 +244,7 @@ def install(tm, project_dir):
     snapshot.GroupLayer = GroupLayer
     snapshot.guisystem = type("G", (), {"currentTransportManager": tm})()
     snapshot.state = type("S", (), {"projectPaths": ProjectPaths(project_dir)})()
-    snapshot.resourceManager = type("RM", (), {
-        "allResources": staticmethod(lambda t: [tm])})()
+    snapshot.resourceManager = RM([tm], automatic=automatic, load_error=load_error)
     snapshot.TransportManager = TM
 
 
@@ -223,7 +274,11 @@ track2 = Track("Song 2", [])  # empty track, and no timecode tags
 
 tmpdir = tempfile.mkdtemp()
 tm = TM("default", [track1, track2])
-install(tm, tmpdir)
+# The automatic setlist is the showfile's own census; it holds a track no loaded
+# setlist references, which is exactly the case `tracks` alone cannot report.
+dropped = Track("Dropped", [Layer("D", 0.0, 5.0, {0.0: clip_a})])
+automatic = SetList("automatic", [track1, track2, dropped])
+install(tm, tmpdir, automatic=automatic)
 
 
 def check(label, cond, detail=""):
@@ -363,8 +418,7 @@ ok &= check("missing transport -> error, no crash", snap3["error"] == "no transp
 
 # Default scope must capture *every* transport, not just the active one.
 tm_b = TM("second", [Track("Other", [Layer("L", 0.0, 5.0, {0.0: clip_b})])])
-snapshot.resourceManager = type("RM", (), {
-    "allResources": staticmethod(lambda t: [tm, tm_b])})()
+snapshot.resourceManager = RM([tm, tm_b], automatic=automatic)
 snap_all = snapshot.capture()
 ok &= check("all scope captures every transport", snap_all["transportCount"] == 2,
             str([t["name"] for t in snap_all["transports"]]))
@@ -384,8 +438,7 @@ only_b = Track("Only B", [Layer("M", 0.0, 5.0, {0.0: clip_b})])
 tm_x = TM("x", [shared])
 tm_y = TM("y", [shared, only_b])
 install(tm_x, tmpdir)
-snapshot.resourceManager = type("RM", (), {
-    "allResources": staticmethod(lambda t: [tm_x, tm_y])})()
+snapshot.resourceManager = RM([tm_x, tm_y])
 snap_dedupe = snapshot.capture()
 
 ids = [t["id"] for t in snap_dedupe["tracks"]]
@@ -404,18 +457,139 @@ ok &= check("shared track's layer stored once", blob.count('"L"') == 1, str(blob
 ok &= check("shared track's media stored once",
             blob.count('"Opener"') == 1, str(blob.count('"Opener"')))
 
-# Same name, genuinely different track (different uid) must not be merged.
-a = Track("Twin", [Layer("A", 0.0, 1.0)])
-b = Track("Twin", [Layer("B", 0.0, 1.0)])
+print("\n== track identity comes from the path ==")
+# Same display name, genuinely different resources (the live case: one of them
+# had been moved to the trash and was still referenced by a setlist).
+a = Track("Twin", [Layer("A", 0.0, 1.0)], path="objects/track/twin_a.apx")
+b = Track("Twin", [Layer("B", 0.0, 1.0)], path="objects/track/twin_b.apx")
 a.uid, b.uid = 101, 102
 tm_t = TM("t", [a, b])
 install(tm_t, tmpdir)
 snap_twins = snapshot.capture()
 twin_ids = [t["id"] for t in snap_twins["tracks"]]
-ok &= check("same-named tracks kept separate", twin_ids == ["Twin", "Twin #2"], str(twin_ids))
+ok &= check("same-named tracks kept separate",
+            twin_ids == ["Twin #twin_a", "Twin #twin_b"], str(twin_ids))
 ok &= check("both twins referenced",
-            snap_twins["transports"][0]["trackRefs"] == ["Twin", "Twin #2"],
+            snap_twins["transports"][0]["trackRefs"] == ["Twin #twin_a", "Twin #twin_b"],
             str(snap_twins["transports"][0]["trackRefs"]))
+ok &= check("path recorded on the track",
+            [t["path"] for t in snap_twins["tracks"]]
+            == ["objects/track/twin_a.apx", "objects/track/twin_b.apx"],
+            str([t["path"] for t in snap_twins["tracks"]]))
+
+# The bug the old encounter-order counter caused: whichever twin was walked
+# first got the bare name and the other got " #2", so changing which setlist a
+# transport had loaded moved the suffix and the diff claimed a whole track had
+# been removed and another added. Ids must not depend on walk order.
+install(TM("t", [b, a]), tmpdir)
+snap_twins_rev = snapshot.capture()
+ok &= check("ids are identical when the setlist is walked in the other order",
+            sorted(t["id"] for t in snap_twins_rev["tracks"]) == sorted(twin_ids),
+            str([t["id"] for t in snap_twins_rev["tracks"]]))
+ok &= check("each twin keeps its own id",
+            snap_twins_rev["transports"][0]["trackRefs"] == ["Twin #twin_b", "Twin #twin_a"],
+            str(snap_twins_rev["transports"][0]["trackRefs"]))
+# ...and dropping one from the setlist must not renumber the other.
+install(TM("t", [b]), tmpdir)
+ok &= check("id survives the other twin not being loaded at all",
+            [t["id"] for t in snapshot.capture()["tracks"]] == ["Twin #twin_b"],
+            str([t["id"] for t in snapshot.capture()["tracks"]]))
+
+print("\n== trashed tracks ==")
+# A setlist playing a track out of the trash is worth surfacing, and the capture
+# could not say so at all while the id was just the display name.
+live = Track("140_one_one", [Layer("A", 0.0, 1.0)],
+             path="objects/track/140_one_one.apx")
+binned = Track("140_one_one", [Layer("B", 0.0, 1.0)],
+               path="trash/objects/track/140_one_one.apx")
+live.uid, binned.uid = 7429913502632686800, 17535762199310169262
+install(TM("t", [live, binned]), tmpdir)
+snap_trash = snapshot.capture()
+trash_ids = [t["id"] for t in snap_trash["tracks"]]
+ok &= check("trashed track distinguished by path, live one keeps its name",
+            trash_ids == ["140_one_one", "140_one_one #trash"], str(trash_ids))
+by_id = {t["id"]: t for t in snap_trash["tracks"]}
+ok &= check("trashed flagged", by_id["140_one_one #trash"]["trashed"] is True)
+ok &= check("live track not flagged", by_id["140_one_one"]["trashed"] is False)
+
+print("\n== unreadable track path ==")
+# The path is the identity, but a capture must never fail because it can't be
+# read -- uid, then name, are the fallbacks.
+pathless = PathlessTrack("Ghost", [Layer("A", 0.0, 1.0)])
+pathless.uid = 900
+install(TM("t", [pathless]), tmpdir)
+snap_pathless = snapshot.capture()
+ok &= check("capture survives an unreadable path", snap_pathless["error"] is None,
+            repr(snap_pathless["error"]))
+ok &= check("falls back to the name for the id",
+            [t["id"] for t in snap_pathless["tracks"]] == ["Ghost"],
+            str([t["id"] for t in snap_pathless["tracks"]]))
+ok &= check("path null, not trashed",
+            snap_pathless["tracks"][0]["path"] is None
+            and snap_pathless["tracks"][0]["trashed"] is False,
+            str(snap_pathless["tracks"][0]["path"]))
+
+print("\n== showfile census ==")
+install(tm, tmpdir, automatic=automatic)
+snap_census = snapshot.capture()
+sf = snap_census["showfile"]
+ok &= check("census source recorded", sf["source"] == "objects/setlist/automatic.apx",
+            repr(sf["source"]))
+ok &= check("census lists every track in the showfile",
+            sf["trackIds"] == ["Song 1", "Song 2", "Dropped"], str(sf["trackIds"]))
+ok &= check("census count", sf["trackCount"] == 3, repr(sf["trackCount"]))
+ok &= check("no census error", sf["error"] is None, repr(sf["error"]))
+# Membership only: a track named by the census but not referenced by any loaded
+# setlist must not get a body in `tracks` (bodies cost ~750KB and a layers
+# traversal of every track, which is the documented Designer-crash exposure).
+ok &= check("census does not add track bodies",
+            [t["id"] for t in snap_census["tracks"]] == ["Song 1", "Song 2"],
+            str([t["id"] for t in snap_census["tracks"]]))
+ok &= check("census ids resolve like trackRefs",
+            set(snap_census["transports"][0]["trackRefs"]) <= set(sf["trackIds"]))
+
+print("\n== the census does not read display names it doesn't need ==")
+# Reading .description for all 126 tracks of the automatic setlist correlated
+# with a live Designer freeze, where the same sweep over .path was ~25ms. A
+# track already in the registry must resolve from its path alone.
+registry = snapshot._TrackRegistry()
+cheap = Track("Cheap", [Layer("A", 0.0, 1.0)])
+cheap_id = registry.add(cheap, None, [])
+cheap.description_reads = 0
+ok &= check("registry hit returns the known id", registry.id_for(cheap) == cheap_id,
+            repr(registry.id_for(cheap)))
+ok &= check("registry hit reads no display name", cheap.description_reads == 0,
+            str(cheap.description_reads))
+# A miss still has to mint the right id, which does need the name.
+missing = Track("Unloaded", [Layer("A", 0.0, 1.0)])
+ok &= check("registry miss still mints the id", registry.id_for(missing) == "Unloaded",
+            repr(registry.id_for(missing)))
+ok &= check("a miss captures no body", "Unloaded" not in registry.records,
+            str(sorted(registry.records)))
+# The path is the key, so a same-named track at another path is still a miss.
+elsewhere = Track("Cheap", [], path="trash/objects/track/Cheap.apx")
+ok &= check("same name, different path -> its own id",
+            registry.id_for(elsewhere) == "Cheap #trash", repr(registry.id_for(elsewhere)))
+# And a track with no readable path still falls back to uid, then name.
+ghost = PathlessTrack("Ghost", [])
+ghost.uid = 900
+ok &= check("pathless track still resolves", registry.id_for(ghost) == "Ghost",
+            repr(registry.id_for(ghost)))
+
+# On failure trackIds must stay null, never [] -- the viewer has to tell "no
+# census available" from "the showfile is empty".
+install(tm, tmpdir, load_error="resource load failed")
+snap_noload = snapshot.capture()
+sf_bad = snap_noload["showfile"]
+ok &= check("capture still succeeds when the census can't load",
+            snap_noload["error"] is None, repr(snap_noload["error"]))
+ok &= check("trackIds null, not empty", sf_bad["trackIds"] is None, repr(sf_bad["trackIds"]))
+ok &= check("census error recorded",
+            sf_bad["error"] == "resource load failed", repr(sf_bad["error"]))
+ok &= check("census failure noted in debug",
+            any("showfile census failed" in d for d in snap_noload["debug"]),
+            str(snap_noload["debug"]))
+ok &= check("tracks still captured", snap_noload["trackCount"] == 2)
 
 print("\n== list_transports ==")
 install(tm, tmpdir)

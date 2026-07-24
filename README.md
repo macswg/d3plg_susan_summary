@@ -39,6 +39,19 @@ Where a track carries timecode tags, times are shown and logged as timecode
 (`01:00:02.27`) instead of seconds; tracks without them keep seconds. Each track
 also records its cues — section breaks, notes and TC/CUE/MIDI tags.
 
+Each track also carries its resource `path` (`objects/track/140_one_one.apx`)
+and a `trashed` flag, and its `id` is derived from that path rather than from
+the order the setlists happen to be walked — so two tracks sharing a display
+name keep the same ids from one capture to the next, and a diff doesn't report a
+track removed and re-added when nothing changed.
+
+Alongside the loaded setlists, every snapshot records a `showfile` census — the
+track ids in `objects/setlist/automatic.apx`, which loads whatever any transport
+has active — so a diff can tell a track *deleted from the showfile* from one
+merely *dropped from a setlist*. It holds ids only, never track bodies; if the
+census can't be read, `trackIds` is `null` (not `[]`) and `error` says why,
+while the rest of the capture proceeds.
+
 Snapshots land in `<project>/plugins/susan_summary/logs/` (next to the plugin), named
 `<date>_<time>_<project>.json`. Keys are sorted and indented so consecutive
 captures diff cleanly. `logs/` is gitignored here — commit it in the project
@@ -73,8 +86,9 @@ snapshot.capture()
 
 `tests/test_snapshot.py` exercises the whole traversal against fake director
 objects (no Designer, no dependencies — just `python tests/test_snapshot.py`),
-covering nested groups, clip swaps, disabled layers, empty tracks, a missing
-setlist and an unwritable log dir.
+covering nested groups, clip swaps, disabled layers, empty tracks, path-derived
+track ids (including trashed tracks and an unreadable path), the showfile
+census, a missing setlist and an unwritable log dir.
 
 `tools/ui_test.js` drives the real plugin page in Chrome — clicks Capture,
 reports what rendered, screenshots it, and fails on any page error. It needs
