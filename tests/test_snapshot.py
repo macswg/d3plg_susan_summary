@@ -635,5 +635,74 @@ ok &= check("traversal still returns", snap6["transports"][0]["trackCount"] == 2
 ok &= check("writtenTo None, no crash", snap6["writtenTo"] is None, repr(snap6["writtenTo"]))
 ok &= check("failure recorded in debug", any("write failed" in d for d in snap6["debug"]), str(snap6["debug"]))
 
+print("\n== the build ==")
+# ReleaseVersion's members are static methods. _attr skips callables, so reading
+# them with it silently yields a snapshot of nothing -- the trap that made
+# `project` null on the first live capture.
+class FakeReleaseVersion(object):
+    versionString = staticmethod(lambda: "r33.2.2_msg/main-branch, rev 253484")
+    getReleaseString = staticmethod(lambda: "Full")
+    customReleaseName = staticmethod(lambda: "Sphere")
+    # A machine with no OS image answers this string, not an error.
+    osImageVersion = staticmethod(lambda: "not found")
+    isStarter = staticmethod(lambda: False)
+    micro = staticmethod(lambda: 253484)
+
+snapshot.ReleaseVersion = FakeReleaseVersion
+dbg = []
+build = snapshot._release_version(dbg)
+ok &= check("static methods are called, not skipped as callables",
+            build["version"] == "r33.2.2_msg/main-branch, rev 253484", str(build))
+ok &= check("releaseType carries the licence type, not a release number",
+            build["releaseType"] == "Full", str(build))
+ok &= check("the 'not found' OS image sentinel becomes null, not a version",
+            build["osImage"] is None, str(build))
+ok &= check("a false flag stays false rather than becoming null",
+            build["starter"] is False, str(build))
+ok &= check("a member the build does not expose degrades to null and is noted",
+            build["branch"] is None and any("branchName" in d for d in dbg), str(dbg))
+del snapshot.ReleaseVersion
+
+print("\n== option switches ==")
+# ASCII hex text whose decoded bytes are nibble-swapped ASCII. Encoded here the
+# long way round so the test would catch the decoder being "simplified" to a
+# plain hex decode.
+def encode_options(text):
+    swapped = "".join(chr(((ord(c) & 0x0F) << 4) | ((ord(c) & 0xF0) >> 4))
+                      for c in text)
+    import binascii
+    return binascii.hexlify(swapped.encode("latin-1")).decode("ascii")
+
+optdir = tempfile.mkdtemp()
+optfile = os.path.join(optdir, "options.bin")
+with open(optfile, "wb") as fh:
+    fh.write(encode_options("additionalCommandLatency 2\n"
+                            "useLegacySLCRegionTag 1\n"
+                            "bareSwitch\n").encode("ascii"))
+dbg = []
+read = snapshot._read_options(optfile, dbg)
+ok &= check("switches decode to name/value pairs",
+            read["values"].get("useLegacySLCRegionTag") == "1", str(read["values"]))
+# Coercing "0"/"1" to numbers or bools would make 0, off and false
+# indistinguishable in a diff.
+ok &= check("values stay strings, verbatim",
+            read["values"].get("additionalCommandLatency") == "2", str(read["values"]))
+ok &= check("a switch with no value is empty, not dropped",
+            read["values"].get("bareSwitch") == "", str(read["values"]))
+
+# The distinction the whole field exists for: null is "could not read", {} is
+# "nothing is set". Conflating them makes a diff report every switch as removed.
+missing = snapshot._read_options(os.path.join(optdir, "nope.bin"), dbg)
+ok &= check("a project that never set a switch reports {}, not null",
+            missing["values"] == {} and missing["error"] is None, str(missing))
+
+badfile = os.path.join(optdir, "bad.bin")
+with open(badfile, "wb") as fh:
+    fh.write(b"not hex at all")
+bad = snapshot._read_options(badfile, dbg)
+ok &= check("an unreadable file reports null, never {}",
+            bad["values"] is None and bool(bad["error"]), str(bad))
+ok &= check("and says why, in debug", any("options unreadable" in d for d in dbg), str(dbg))
+
 print("\n" + ("ALL PASS" if ok else "FAILURES ABOVE"))
 sys.exit(0 if ok else 1)

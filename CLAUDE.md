@@ -113,9 +113,57 @@ day's date — operators name sessions by the day they worked. The offset keeps 
 unambiguous when logs move between machines. Note this makes `capturedAt` sort
 lexicographically only within one timezone.
 
+## The build and the option switches (v6)
+
+`system.build` comes from `ReleaseVersion`, whose members are all **static
+methods** — `_call`, never `_attr`. The whole block costs ~3ms, no traversal.
+Three traps, all measured on a live r33 director:
+
+- `getReleaseString()` is `'Full'` / `'Starter'`, the **licence type**, not a
+  release number. It is `releaseType` in the snapshot for that reason.
+- `micro()` is the **revision** (253484), not the patch. That director ran
+  r33.2.**2**, so a version rebuilt from `major`/`minor`/`micro` would read
+  "33.2.253484". Use `versionString()` and nothing else.
+- `osImageVersion()` answers the string `'not found'` on a machine with no OS
+  image. Stored raw it would diff against a real version as a downgrade, so it
+  normalises to null.
+
+`system.options` are the advanced project settings ("option switches").
+**They are not in the Python API — don't go looking again.** `d3.Options` lists
+all 339 names via `dir()`, but they are properties with no obtainable instance:
+absent from `state`, `guisystem`, all 99 subsystems, `blip.app`, `blip.instance`
+and the `D3` global; `Options()` refuses to construct, `Options.null` raises
+ACCESS_VIOLATION on read, and blip reflection reports 0 properties.
+`paths.iniPath` points at an install-level `d3.ini` and is a different thing.
+
+They live in two files, both **ASCII hex text whose decoded bytes are
+nibble-swapped ASCII**, decoding to sorted `name value` lines:
+
+- project: `{project}/internal/options/options.bin`
+- machine: `{d3 Projects}/machine.bin` — and machine **overrides** project, so
+  the two are recorded separately rather than merged. A merged map answers "is
+  this switch on" while hiding which layer set it.
+
+`binascii.unhexlify`, not `str.decode("hex")`: the latter is Python 2 only.
+
+`values` is **null, never `{}`**, when the file could not be read — same rule as
+`showfile.trackIds`, for the same reason. A *missing* file is not a failure
+(a project that never had a switch touched has none) and reports `{}`. Values
+stay **strings, verbatim**: coercing `"0"` would make `0`, `off` and `false`
+indistinguishable downstream.
+
+`_project_root` finds the project folder by looking for the options file rather
+than trusting one accessor — on that director `D3.projectFolder` answered the
+bare name `"moose"` while the cwd was the full `d:/d3 projects/moose`, so a path
+built from the former silently resolves somewhere else.
+
 ## Schema
 
-`schemaVersion` is **5**. Tracks are stored **once** in a top-level `tracks`
+`schemaVersion` is **6**. `system` records the Designer build and the option
+switches; without it two captures spanning an upgrade, or taken off two servers,
+diff as though the software underneath were identical.
+
+Tracks are stored **once** in a top-level `tracks`
 array, each with an `id`; transports carry `trackRefs` pointing into it. Setlists
 share tracks, so writing them inline duplicated the payload — one layer edit
 produced an identical diff hunk per transport, and the file was twice the size

@@ -47,8 +47,24 @@ __all__ = ["capture", "list_transports"]
 #    encounter order, tracks carry `path`/`trashed`, and a top-level `showfile`
 #    records the automatic setlist's membership so a diff can tell "deleted from
 #    the showfile" from "dropped from a setlist".
-SCHEMA_VERSION = 5
+# 6: a top-level `system` records the Designer build and the advanced project
+#    settings ("option switches"). Without it a pair of captures spanning a
+#    Designer upgrade, or taken off two servers, diffs as though the software
+#    underneath were identical -- and a switch like useLegacySLCRegionTag
+#    changes how the showfile behaves without changing a field the capture
+#    records at all.
+SCHEMA_VERSION = 6
 MODULE_DIR_NAME = "susan_summary"
+
+# Advanced project settings live in a file, not in the API. d3.Options lists all
+# 339 switch names via dir(), but they are properties with no obtainable
+# instance: absent from state, guisystem, all 99 subsystems, blip.app,
+# blip.instance and the D3 global; Options() refuses to construct and
+# Options.null raises ACCESS_VIOLATION on read. paths.iniPath points at an
+# install-level d3.ini, which is a different thing. Probed on a live r33
+# director -- don't re-hunt the API for these.
+PROJECT_OPTIONS_PATH = ("internal", "options", "options.bin")
+MACHINE_OPTIONS_NAME = "machine.bin"
 
 # The showfile-wide setlist. resourceManager.load()s regardless of what any
 # transport has active, which is what makes it a census rather than an accident
@@ -647,6 +663,179 @@ def _project_name(debug):
     return None
 
 
+def _release_version(debug):
+    """The Designer build. Every ReleaseVersion member is a *static* method, so
+    these go through _call and not _attr -- _attr skips callables, which is the
+    same trap that made `project` come back null on the first real capture.
+
+    Measured at ~3ms for the whole block on a live r33 director: no traversal,
+    no live objects, nothing to be careful about.
+    """
+    rv = _g("ReleaseVersion")
+    if rv is None:
+        debug.append("ReleaseVersion unavailable")
+        return {"error": "ReleaseVersion unavailable"}
+
+    def text(method):
+        val = _call(rv, method)
+        if val is None:
+            debug.append("ReleaseVersion." + method + " unreadable")
+            return None
+        val = str(val)
+        # osImageVersion answers "not found" on a machine without an OS image.
+        # That is a sentinel, not a version, and storing it would diff against a
+        # real version string as though the image had been downgraded.
+        return None if (not val or val == "not found") else val
+
+    def flag(method):
+        val = _call(rv, method)
+        return None if val is None else bool(val)
+
+    return {
+        # versionString() carries the revision; major/minor/micro do NOT
+        # reconstruct it -- micro() is the revision (253484), not the patch, so
+        # r33.2.2 rebuilt from the parts would read "33.2.253484".
+        "version": text("versionString"),
+        "versionName": text("versionName"),
+        # 'Full' / 'Starter' -- the licence type, not a release number.
+        "releaseType": text("getReleaseString"),
+        "phase": text("getPhaseString"),
+        "branch": text("branchName"),
+        "buildId": text("uniqueId"),
+        "customRelease": text("customReleaseName"),
+        "tags": text("getTagsString"),
+        "platform": text("getPlatformString"),
+        "osImage": text("osImageVersion"),
+        "renderStream": text("renderStreamVersionString"),
+        "starter": flag("isStarter"),
+        "beta": flag("isBetaRelease"),
+        "rc": flag("isReleaseCandidate"),
+        "custom": flag("isCustomRelease"),
+        "debugBuild": flag("isDebug"),
+        "localPatches": flag("hasLocalPatches"),
+        "error": None,
+    }
+
+
+def _decode_options(blob):
+    """Decode an options file into {name: value}.
+
+    The format is ASCII *hex text* whose decoded bytes are **nibble-swapped**
+    ASCII; the plain text is sorted `name value` lines. Confirmed against a live
+    r33 director on both the project and machine files.
+
+    binascii rather than str.decode("hex") because the latter is Python 2 only
+    and this file has to run on both. Imported inside the function for the same
+    reason _os() exists -- a module-level name can be shadowed by a director
+    global, and the failure is silent.
+    """
+    import binascii
+    raw = binascii.unhexlify(blob.strip())
+    if not isinstance(raw, str):          # Python 3 gives bytes
+        raw = raw.decode("latin-1")
+    text = "".join(chr(((ord(c) & 0x0F) << 4) | ((ord(c) & 0xF0) >> 4))
+                   for c in raw)
+    values = {}
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        # Values stay strings, verbatim. Coercing "0" to a number or a bool
+        # would make 0, off and false indistinguishable in a diff.
+        parts = line.split(" ", 1)
+        values[parts[0]] = parts[1].strip() if len(parts) > 1 else ""
+    return values
+
+
+def _read_options(path, debug):
+    """One options file as {source, values, error}.
+
+    `values` is **null, never {}**, when the file could not be read: empty means
+    nothing is set, null means we do not know, and conflating them makes a diff
+    report every switch as removed. Same rule as showfile.trackIds.
+
+    A missing file is not an error -- a project that has never had a switch
+    touched simply has none -- so that reports {} rather than null.
+    """
+    os = _os()
+    if path is None:
+        return {"source": None, "values": None, "error": "path unresolved"}
+    if not os.path.isfile(path):
+        return {"source": path, "values": {}, "error": None}
+    try:
+        handle = open(path, "rb")
+        try:
+            blob = handle.read()
+        finally:
+            handle.close()
+        if not isinstance(blob, str):
+            blob = blob.decode("ascii")
+        return {"source": path, "values": _decode_options(blob), "error": None}
+    except BaseException as error:
+        debug.append("options unreadable at " + str(path) + ": " + str(error))
+        return {"source": path, "values": None, "error": str(error)}
+
+
+def _project_root(debug):
+    """The project folder -- the one holding internal/ and objects/.
+
+    Chosen by looking for the options file rather than by trusting one accessor:
+    on a live director `D3.projectFolder` answered the bare name "moose" while
+    the cwd was the full "d:/d3 projects/moose", so a path built from the former
+    silently resolves against the wrong place. Falls back to the cwd, which
+    CLAUDE.md documents as the project root in the registered-module context.
+    """
+    os = _os()
+    candidates = []
+    try:
+        candidates.append(os.getcwd())
+    except BaseException:
+        pass
+    folder = _call(_project_paths(debug), "projectFolder")
+    if folder:
+        candidates.append(str(folder))
+
+    for root in candidates:
+        if os.path.isfile(os.path.join(root, *PROJECT_OPTIONS_PATH)):
+            return root
+    return candidates[0] if candidates else None
+
+
+def _option_switches(debug):
+    """Project and machine option switches, kept apart on purpose.
+
+    Machine settings override project settings, so merging them into one map
+    would answer "is this switch on" while hiding which layer set it -- and the
+    layers move independently between captures.
+    """
+    try:
+        return _option_switches_unguarded(debug)
+    except BaseException as error:
+        # Path resolution touches the director and the filesystem, and this must
+        # never be what costs a capture its tracks.
+        debug.append("option switches unresolved: " + str(error))
+        unknown = {"source": None, "values": None, "error": str(error)}
+        return {"project": dict(unknown), "machine": dict(unknown)}
+
+
+def _option_switches_unguarded(debug):
+    os = _os()
+    root = _project_root(debug)
+    project_path = os.path.join(root, *PROJECT_OPTIONS_PATH) if root else None
+
+    # machine.bin sits in the d3 Projects directory, one level above the
+    # project. PathsManager.appProjectDirectory is the authority; the parent of
+    # the project root is the fallback for when it cannot be read.
+    projects_dir = _attr(_g("paths"), "appProjectDirectory")
+    projects_dir = str(projects_dir) if projects_dir else (
+        os.path.dirname(root.rstrip("/\\")) if root else None)
+    machine_path = (os.path.join(projects_dir, MACHINE_OPTIONS_NAME)
+                    if projects_dir else None)
+
+    return {"project": _read_options(project_path, debug),
+            "machine": _read_options(machine_path, debug)}
+
+
 def _plugin_dir(debug):
     """This plugin's own folder, {project}/plugins/susan_summary.
 
@@ -935,12 +1124,18 @@ def capture(transport_name=None, active_only=False):
         # Membership of the whole showfile, ids only -- see _showfile_census.
         "showfile": {"source": AUTOMATIC_SETLIST_PATH, "trackIds": None,
                      "trackCount": None, "error": None},
+        # The software the showfile was read by -- see the v6 note above.
+        "system": {"build": None, "options": None},
         "writtenTo": None,
         "error": None,
         "debug": debug,
     }
     try:
         snapshot["project"] = _project_name(debug)
+        # Set before _write serialises, like everything else -- writtenTo is the
+        # precedent for what happens when it is not.
+        snapshot["system"] = {"build": _release_version(debug),
+                              "options": _option_switches(debug)}
         active = _resolve_transport(None, debug)
         snapshot["activeTransport"] = _name_of(active)
 

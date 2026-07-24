@@ -9,6 +9,13 @@ The point is a diffable record: run it at the end of each session and
 `git diff` two snapshots to see exactly what changed — a renamed layer, a
 swapped clip, a retimed cue.
 
+Each snapshot also records the software underneath: the Designer build it was
+captured on, and the advanced project settings (the toggles disguise calls
+*option switches*, e.g. `useLegacySLCRegionTag`). Those change how a showfile
+behaves without changing anything else in the capture, so without them a pair of
+snapshots spanning an upgrade — or taken off two different servers — looks
+identical when it is not.
+
 ## Install
 
 No build step, no dependencies. Download `susan_summary.zip` from the
