@@ -12,7 +12,7 @@ const API = '/api/session/python'
 
 // Bump on release. There's no build step to inject this, so it lives here as
 // the single source -- keep it in step with the git tag.
-const APP_VERSION = '1.0.0'
+const APP_VERSION = '2.0.0'
 
 let registered = false
 
