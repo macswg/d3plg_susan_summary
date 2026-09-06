@@ -71,6 +71,18 @@ Snapshots land in `<project>/plugins/susan_summary/logs/` (next to the plugin), 
 captures diff cleanly. `logs/` is gitignored here — commit it in the project
 repo where the showfile lives, not in this one.
 
+## Building
+
+`sh tools/build.sh` stages the files Designer loads into `build/susan_summary/`
+and zips them to `build/susan_summary.zip` — the same layout the install
+instructions above describe, so the zip unzips straight into a `plugins/`
+folder. It runs the test suite first and refuses to package a failing tree.
+Tests, tools, `ref/` and `CLAUDE.md` are development material and stay out of
+the zip. `build/` is gitignored.
+
+This is packaging, not compiling. There is still no build step in the sense that
+matters: the files that ship are the files in the repo, byte for byte.
+
 ## How it works
 
 `index.js` registers `snapshot.py` with the director once per page load, then

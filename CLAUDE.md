@@ -15,6 +15,11 @@ reconsider it first.
 - `index.js` — registers the module, calls `capture()`, renders the result.
 - `d3plugin.json` — manifest; the `name` is what Designer shows.
 
+`tools/build.sh` is **packaging, not compiling** — it copies the six runtime
+files into `build/susan_summary/` and zips them, so the release artifact matches
+what the README says to unzip. It adds no transform step and the shipped files
+are byte-identical to the repo. The no-bundler rule above still stands.
+
 ## Two execution contexts
 
 `snapshot.py` must work both as a registered module (director injects
