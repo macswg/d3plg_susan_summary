@@ -68,8 +68,12 @@ class VariableVideoModule(Module):
 class Layer(object):
     # Real layers carry no beat fields at all -- deliberately absent here.
     def __init__(self, name, tStart, tEnd, media_by_time=None, renderEnable=True,
-                 evals=True):
+                 evals=True, uid=None):
         self.name = name
+        # Real layers derive from Resource and carry a UID. Left absent by
+        # default so the existing fixtures exercise the derived-id fallback.
+        if uid is not None:
+            self.uid = uid
         self.tStart = tStart
         self.tEnd = tEnd
         self.renderEnable = renderEnable
@@ -703,6 +707,123 @@ bad = snapshot._read_options(badfile, dbg)
 ok &= check("an unreadable file reports null, never {}",
             bad["values"] is None and bool(bad["error"]), str(bad))
 ok &= check("and says why, in debug", any("options unreadable" in d for d in dbg), str(dbg))
+
+print("\n== layer identity ==")
+# Layers had no identity at all before v7, so a differ could only match them on
+# group path + name -- and in the live test project 814 of 1935 layers sit in a
+# group colliding on exactly that key, 10 of them matching on extents too. Two
+# identical records made "one of these was removed" unprovable.
+dbg = []
+uid_track = Track("Ids", [
+    Layer("Kept", 0.0, 10.0, uid=101),
+    Layer("Renamed later", 20.0, 30.0, uid=102),
+])
+rec = snapshot._track_record(uid_track, None, dbg)
+by_name = {l["name"]: l for l in rec["layers"]}
+ok &= check("uid becomes the id", by_name["Kept"]["id"] == "#101",
+            repr(by_name["Kept"]["id"]))
+ok &= check("uid recorded raw", by_name["Kept"]["uid"] == 101,
+            repr(by_name["Kept"]["uid"]))
+ok &= check("idSource says the id is authoritative",
+            by_name["Kept"]["idSource"] == "uid", repr(by_name["Kept"]["idSource"]))
+
+# The point of keying on the uid: a rename and a retime are field changes on one
+# layer, not a removal plus an addition.
+renamed = Track("Ids", [
+    Layer("Kept", 0.0, 10.0, uid=101),
+    Layer("New name", 25.0, 35.0, uid=102),
+])
+rec2 = snapshot._track_record(renamed, None, dbg)
+ok &= check("id survives a rename and a retime",
+            [l["id"] for l in rec["layers"]] == [l["id"] for l in rec2["layers"]],
+            str([l["id"] for l in rec2["layers"]]))
+
+# Without a uid the id falls back to name + extents, which is all there is.
+dbg = []
+plain = Track("NoUids", [Layer("Solo", 0.0, 10.0)])
+rec3 = snapshot._track_record(plain, None, dbg)
+ok &= check("no uid falls back to name and extents",
+            rec3["layers"][0]["id"] == "Solo @0.00-10.00",
+            repr(rec3["layers"][0]["id"]))
+ok &= check("and says the id is only derived",
+            rec3["layers"][0]["idSource"] == "derived",
+            repr(rec3["layers"][0]["idSource"]))
+ok &= check("uid is null, not absent",
+            rec3["layers"][0]["uid"] is None, repr(rec3["layers"][0]["uid"]))
+
+# Group membership is part of a derived id; two layers called the same thing in
+# different groups are different layers.
+grouped = Track("Grouped", [GroupLayer("Backdrops", [Layer("Solo", 0.0, 10.0)])])
+rec4 = snapshot._track_record(grouped, None, dbg)
+ok &= check("derived id carries the group path",
+            rec4["layers"][0]["id"] == "Backdrops/Solo @0.00-10.00",
+            repr(rec4["layers"][0]["id"]))
+
+# Regression: track times wobble in the last decimals between captures of an
+# untouched showfile. Measured 2026-09-05, one position read 358.858867 and then
+# 358.858398. An id built from the raw float turns that into remove + add.
+a = snapshot._track_record(Track("W", [Layer("Wobbly", 358.858867, 400.0)]), None, dbg)
+b = snapshot._track_record(Track("W", [Layer("Wobbly", 358.858398, 400.0)]), None, dbg)
+ok &= check("float wobble does not move a derived id",
+            a["layers"][0]["id"] == b["layers"][0]["id"],
+            "%r vs %r" % (a["layers"][0]["id"], b["layers"][0]["id"]))
+
+# Two records nothing distinguishes still need distinct ids, or the differ
+# cannot say which of them went away.
+dbg = []
+twins = Track("Twins", [Layer("Same", 5.0, 9.0), Layer("Same", 5.0, 9.0)])
+rec5 = snapshot._track_record(twins, None, dbg)
+ids = [l["id"] for l in rec5["layers"]]
+ok &= check("identical layers get distinct ids", len(set(ids)) == 2, str(ids))
+ok &= check("the duplicate is suffixed, the first is not",
+            ids == ["Same @5.00-9.00", "Same @5.00-9.00~2"], str(ids))
+
+# A repeated *uid* is not two layers -- it is one layer reached twice by the
+# traversal, which is a capture artefact and must not read as showfile state.
+dbg = []
+doubled = Track("Doubled", [Layer("Once", 0.0, 4.0, uid=77),
+                            Layer("Once", 0.0, 4.0, uid=77)])
+rec6 = snapshot._track_record(doubled, None, dbg)
+ids = [l["id"] for l in rec6["layers"]]
+ok &= check("a repeated uid still yields distinct ids", len(set(ids)) == 2, str(ids))
+ok &= check("and is called out in debug",
+            any("captured 2 times" in d for d in dbg), str(dbg))
+# Director data is sometimes a method rather than a property; _attr skips
+# callables, which is how `project` came back null on the first real capture.
+class MethodUidLayer(Layer):
+    def uid(self):
+        return 909
+
+meth = snapshot._track_record(
+    Track("M", [MethodUidLayer("Via method", 0.0, 1.0)]), None, [])
+ok &= check("a uid exposed as a method is still found",
+            meth["layers"][0]["id"] == "#909", repr(meth["layers"][0]["id"]))
+
+# uid 0 is a valid uid. A falsy-instead-of-None check here would silently drop
+# that layer to a derived id.
+zero = snapshot._track_record(Track("Z", [Layer("Zero", 0.0, 1.0, uid=0)]), None, [])
+ok &= check("uid 0 is an id, not a missing uid",
+            zero["layers"][0]["id"] == "#0" and zero["layers"][0]["idSource"] == "uid",
+            repr((zero["layers"][0]["id"], zero["layers"][0]["idSource"])))
+
+quiet = []
+snapshot._track_record(Track("Q", [Layer("A", 0.0, 1.0, uid=5),
+                                   Layer("B", 2.0, 3.0, uid=6)]), None, quiet)
+ok &= check("distinct uids say nothing in debug",
+            not any("captured" in d for d in quiet), str(quiet))
+
+# The guarantee the differ relies on.
+dbg = []
+full = snapshot.capture()
+for track in full["tracks"]:
+    tids = [l["id"] for l in track["layers"]]
+    ok &= check("ids unique within track %r" % track["id"],
+                len(set(tids)) == len(tids), str(tids))
+ok &= check("every layer has an id and an idSource",
+            all(l.get("id") and l.get("idSource")
+                for t in full["tracks"] for l in t["layers"]))
+ok &= check("schema bumped to 7", full["schemaVersion"] == 7,
+            repr(full["schemaVersion"]))
 
 print("\n" + ("ALL PASS" if ok else "FAILURES ABOVE"))
 sys.exit(0 if ok else 1)

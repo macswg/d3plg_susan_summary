@@ -53,7 +53,17 @@ __all__ = ["capture", "list_transports"]
 #    underneath were identical -- and a switch like useLegacySLCRegionTag
 #    changes how the showfile behaves without changing a field the capture
 #    records at all.
-SCHEMA_VERSION = 6
+# 7: layers carry `id`/`uid`/`idSource`. Until v7 a layer had no identity at
+#    all, so a differ could only match layers on group path + name -- and 814 of
+#    the 1935 layers in the live test project sit in a group that collides on
+#    exactly that key. Adding the extents narrows it to 10, and those last 10
+#    are the ones nothing can separate: two byte-identical records make "one of
+#    these was removed" unprovable. Measured on 2026-09-05, a track held two
+#    records for one video layer that matched in every single field, and when
+#    one disappeared 21 minutes later nothing in the capture could say
+#    whether a stacked duplicate had been deleted or the traversal had simply
+#    stopped counting one layer twice.
+SCHEMA_VERSION = 7
 MODULE_DIR_NAME = "susan_summary"
 
 # Advanced project settings live in a file, not in the API. d3.Options lists all
@@ -130,6 +140,38 @@ def _name_of(obj):
             except BaseException:
                 pass
     return None
+
+
+def _layer_uid(layer):
+    """The layer resource's UID, or None.
+
+    SuperLayer derives from Resource and UidManager keys every resource by a
+    UID, so this is the one identity a layer carries that survives a rename or a
+    move between groups -- unlike the name, which 814 of the 1935 layers in the
+    live test project share with a sibling in the same track.
+
+    Kept as an int when it reads as one, so it serialises as a JSON number and
+    cannot be confused with the derived ids, which are strings.
+
+    Read through _attr and then _call because parts of the director expose data
+    as methods rather than properties -- _attr deliberately skips callables, and
+    that is exactly how `project` came back null on the first real capture. If
+    `uid` turns out to be a method here, the fallback catches it instead of
+    silently dropping every layer to a derived id."""
+    uid = _attr(layer, "uid")
+    if uid is None:
+        uid = _call(layer, "uid")
+    if uid is None:
+        return None
+    try:
+        return int(uid)
+    except BaseException:
+        pass
+    try:
+        text = str(uid).strip()
+    except BaseException:
+        return None
+    return text or None
 
 
 def _captured_at():
@@ -452,6 +494,92 @@ def _beat(track, t, debug):
     return None
 
 
+def _layer_display_path(record):
+    """`Group / Inner / Layer name` -- what the layer is called, in context."""
+    parts = list(record.get("groupPath") or []) + [record.get("name") or "Unknown"]
+    out = []
+    for part in parts:
+        try:
+            out.append(str(part))
+        except BaseException:
+            out.append("?")
+    return "/".join(out)
+
+
+def _derived_layer_id(record):
+    """The id for a layer whose uid could not be read: what it is called, plus
+    where it sits on the timeline.
+
+    Extents are rounded to 2 decimals on purpose. Track times wobble in the last
+    few decimal places between captures of an untouched showfile -- a position
+    measured at 358.858867 read 358.858398 twenty-one minutes later -- and an id
+    built from the raw float would change with it, turning one untouched layer
+    into a removal plus an addition. 2 decimals absorbs that; 3 does not, since
+    those two values straddle the 3rd-decimal boundary.
+
+    Rounding narrows the window, it does not close it: a pair of values either
+    side of a 0.005 boundary still lands on different ids, and two layers less
+    than 10ms apart still collide. Both are reasons to prefer the uid, and this
+    is only what a layer falls back to when the uid cannot be read."""
+    def fixed(value):
+        if value is None:
+            return "?"
+        try:
+            return "{0:.2f}".format(float(value))
+        except BaseException:
+            return "?"
+    return "{0} @{1}-{2}".format(_layer_display_path(record),
+                                 fixed(record.get("tStart")),
+                                 fixed(record.get("tEnd")))
+
+
+def _assign_layer_ids(records, debug):
+    """Give every layer on one track an `id` that is stable between captures.
+
+    Ids are unique **within their track**, which is the scope a diff walks:
+    layers are only ever compared against the layers of the same `tracks[]`
+    entry.
+
+    `idSource` says how much the id is worth:
+      - `uid`     -- the resource's own UID. Survives a rename, a retime and a
+                     move between groups, so a diff of two captures reports
+                     those as field changes on one layer instead of a removal
+                     plus an addition.
+      - `derived` -- reconstructed from name and extents because the uid could
+                     not be read. Only as good as those fields: rename the layer
+                     and the id moves with it.
+
+    A `~<n>` suffix separates records that are otherwise identical. That counter
+    is encounter-ordered, which for tracks was a correctness bug (v5) -- but the
+    order there varied with which setlist happened to be loaded, whereas layers
+    are walked in the showfile's own `track.layers` order, and the suffix is only
+    ever reached by records that no field distinguishes, where any assignment is
+    arbitrary by definition.
+
+    A repeated *uid* is a different thing entirely and gets said out loud: two
+    records sharing one UID are two visits to a single layer resource, not two
+    layers, so the duplicate is a traversal artefact rather than showfile state.
+    """
+    counts = {}
+    for record in records:
+        uid = record.get("uid")
+        if uid is not None:
+            base, source = "#{0}".format(uid), "uid"
+        else:
+            base, source = _derived_layer_id(record), "derived"
+        counts[base] = counts.get(base, 0) + 1
+        seen = counts[base]
+        record["id"] = base if seen == 1 else "{0}~{1}".format(base, seen)
+        record["idSource"] = source
+
+    for base in sorted(counts):
+        if counts[base] > 1 and base.startswith("#"):
+            debug.append(
+                "layer uid {0} captured {1} times on one track -- same resource "
+                "reached twice, not {1} layers".format(base[1:], counts[base]))
+    return records
+
+
 def _layer_records(layer, group_path, track, tc, debug):
     """Flatten a layer, recursing into groups. Mirrors getLayerStartTime() in
     ref/prewarmAllLayers2sec.py, except nothing is skipped: that script drops
@@ -464,6 +592,9 @@ def _layer_records(layer, group_path, track, tc, debug):
         is_group = False
 
     name = _name_of(layer) or "Unknown"
+    # Read outside the guarded block below so that even a layer that fails to
+    # capture still carries its identity, and so keeps a stable id.
+    uid = _layer_uid(layer)
 
     if is_group:
         records = []
@@ -477,6 +608,7 @@ def _layer_records(layer, group_path, track, tc, debug):
         module = _attr(layer, "module")
         return [{
             "name": name,
+            "uid": uid,
             "type": type(module).__name__ if module is not None else type(layer).__name__,
             "groupPath": list(group_path),
             "renderEnable": bool(_attr(layer, "renderEnable", True)),
@@ -494,7 +626,7 @@ def _layer_records(layer, group_path, track, tc, debug):
         # layer above still logs with that one field null; this only fires if
         # something outside those reads blows up. Either way one bad layer never
         # costs us the track.
-        return [{"name": name, "groupPath": list(group_path),
+        return [{"name": name, "uid": uid, "groupPath": list(group_path),
                  "error": str(error)[:200]}]
 
 
@@ -603,6 +735,9 @@ def _track_record(track, settings, debug):
     layers = []
     for layer in _attr(track, "layers", []) or []:
         layers.extend(_layer_records(layer, [], track, tc, debug))
+    # Ids are minted once the whole track is flattened, because uniqueness is
+    # per track and a group's children are only known by then.
+    _assign_layer_ids(layers, debug)
 
     path = _track_path(track)
     return {

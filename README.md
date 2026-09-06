@@ -46,6 +46,13 @@ Where a track carries timecode tags, times are shown and logged as timecode
 (`01:00:02.27`) instead of seconds; tracks without them keep seconds. Each track
 also records its cues — section breaks, notes and TC/CUE/MIDI tags.
 
+Every layer carries an `id` that is stable between captures, plus the `uid` it
+came from and an `idSource` saying whether the id is the layer's own UID or was
+derived from its name and extents. Layer names are not unique — 814 of the 1935
+layers in the test project share a group path and name with a sibling, and 10 of
+those match on timing too — so without an id a diff cannot tell which of two
+identical layers was removed.
+
 Each track also carries its resource `path` (`objects/track/140_one_one.apx`)
 and a `trashed` flag, and its `id` is derived from that path rather than from
 the order the setlists happen to be walked — so two tracks sharing a display

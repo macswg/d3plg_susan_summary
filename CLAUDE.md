@@ -159,9 +159,9 @@ built from the former silently resolves somewhere else.
 
 ## Schema
 
-`schemaVersion` is **6**. `system` records the Designer build and the option
-switches; without it two captures spanning an upgrade, or taken off two servers,
-diff as though the software underneath were identical.
+`schemaVersion` is **7**. Layers carry an `id`. `system` records the Designer
+build and the option switches; without it two captures spanning an upgrade, or
+taken off two servers, diff as though the software underneath were identical.
 
 Tracks are stored **once** in a top-level `tracks`
 array, each with an `id`; transports carry `trackRefs` pointing into it. Setlists
@@ -169,6 +169,82 @@ share tracks, so writing them inline duplicated the payload — one layer edit
 produced an identical diff hunk per transport, and the file was twice the size
 (37KB → 19KB on the test project). The app still renders tracks grouped per
 transport by resolving the refs.
+
+### Layer identity is the uid (v7)
+
+Every layer record carries `id`, `uid` and `idSource`. Ids are unique **within
+their track** — that is the scope a diff walks, since layers are only ever
+compared against the layers of the same `tracks[]` entry.
+
+`uid` is the layer resource's own UID. `SuperLayer` derives from `Resource` and
+`UidManager` keys every resource by one, so it is the only identity a layer has
+that survives a rename, a retime or a move between groups — which means a diff
+reports those as field changes on one layer instead of a removal plus an
+addition. Read via `_attr` **and then `_call`**: if `uid` turns out to be a
+method on the live director, the fallback catches it instead of silently
+dropping every layer to a derived id.
+
+`idSource` says what the id is worth: `uid` when it came from the resource,
+`derived` when the uid could not be read and the id was rebuilt from group path,
+name and extents. A derived id is only as good as those fields — rename the
+layer and the id moves with it — so a differ should weight the two differently.
+
+**`tStart`/`tEnd` must stay on the layer record.** `d3_snapshot_diff` labels a
+layer by reading those two fields directly and never parses them back out of the
+id string — deliberately, since a layer name containing `" @"` would defeat any
+split, and this show already has names with trailing spaces and embedded
+newlines. That constraint cuts both ways: the derived id format is free to
+change without touching the viewer, but dropping the extents from the record
+would break its labels even though the id still contains them.
+
+The two sources are **asymmetric about moves**, which is worth stating because a
+reader will hit it. A `uid` layer dragged into another group keeps its id, so a
+diff reports the move as a `group` change on one layer. A `derived` layer has
+its group path baked into the id, so the same move changes the id and reads as a
+removal plus an addition. That is inherent to reconstructing identity from
+display fields, not a bug to fix — but do not describe derived ids as
+move-stable.
+
+Derived ids round extents to **2 decimals**, not 3. Track times wobble in the
+last decimals between captures of an untouched showfile: one position measured
+`358.858867` read `358.858398` twenty-one minutes later, and those two straddle
+the 3rd-decimal boundary. Rounding narrows the window but does not close it —
+values either side of a `.005` boundary still split, and layers under 10ms apart
+still collide.
+
+A `~<n>` suffix separates records nothing else distinguishes. That counter is
+encounter-ordered, which for *tracks* was the v5 correctness bug — but track
+order varied with which setlist was loaded, whereas layers are walked in the
+showfile's own `track.layers` order, and the suffix is only ever reached by
+records no field tells apart, where any assignment is arbitrary.
+
+A repeated **uid** is a different thing and is written to `debug`: two records
+sharing one UID are two visits to a single layer resource, not two layers, so
+that duplicate is a traversal artefact rather than showfile state.
+
+Why this exists: before v7 a layer had no identity at all, so a differ could
+only match on group path + name — which is what `d3_snapshot_diff`'s `layerKey`
+actually did. Measured on the 14:59 capture of 2026-09-05, out of 1935 layers:
+
+| key | layers in a colliding group |
+| --- | --- |
+| `groupPath + name` | 814 |
+| `groupPath + name + tStart + tEnd` | 10 |
+
+Those last 10 are the ones nothing can separate. On 2026-09-05 one track held
+two records for a single video layer that matched in *every* field, media and
+clip version included. One disappeared 21 minutes later and nothing in the
+capture could say whether a stacked duplicate had been deleted or
+the traversal had stopped double-counting a single layer. `uid` answers that;
+`debug` says which one it was.
+
+Quote 814, not 582. 582 is the same measurement counted as *excess over one per
+group* rather than as layers involved, and an earlier draft of these docs
+attached it to the wrong key — on name + extents the figure is 10. The
+`d3_snapshot_diff` session caught it.
+
+**Diffing a v7 capture against a v6 one**: v6 layers have no `id`, so a differ
+must fall back to its old matching for the older side.
 
 ### Track identity is the resource path (v5)
 

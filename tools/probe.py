@@ -18,7 +18,12 @@ __all__ = ["run"]
 
 # Fields snapshot.py currently wants but hasn't confirmed on a real director.
 WANTED = ("bStart", "bEnd", "tStart", "tEnd", "startBeat", "endBeat",
-          "start", "end", "beatStart", "beatEnd", "module", "renderEnable")
+          "start", "end", "beatStart", "beatEnd", "module", "renderEnable",
+          # v7: the layer's own identity. SuperLayer derives from Resource, so
+          # `uid` should be there -- if it reads as None or as a method here,
+          # every layer falls back to a derived id and the capture says so in
+          # `idSource`.
+          "uid", "path")
 
 
 def _g(name):
